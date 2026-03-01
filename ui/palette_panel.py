@@ -13,6 +13,8 @@ class PalettePanel(QWidget):
 
     # Emitted when the user requests a find & replace for a specific block
     replace_requested = pyqtSignal(str, dict)  # block_id, properties
+    # Emitted when the user requests deletion of all instances of a block
+    delete_requested = pyqtSignal(str, dict)   # block_id, properties
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,6 +105,13 @@ class PalettePanel(QWidget):
             entry.block_id, entry.properties
         ))
         menu.addAction(replace_action)
+
+        delete_action = QAction(f"Delete all '{entry.display_name}'…", self)
+        delete_action.triggered.connect(lambda: self.delete_requested.emit(
+            entry.block_id, entry.properties
+        ))
+        menu.addAction(delete_action)
+
         menu.exec(self._list.mapToGlobal(pos))
 
     def _on_double_click(self, item: QListWidgetItem) -> None:

@@ -1,22 +1,24 @@
 from __future__ import annotations
 import os
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QSplitter, QFileDialog,
-    QMessageBox, QStatusBar
+    QMainWindow, QSplitter, QFileDialog,
+    QMessageBox, QStatusBar, QTabWidget
 )
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtCore import Qt
 from core.schematic import LitematicSchematic
+from core import block_ops
 from ui.schematic_panel import SchematicPanel
 from ui.palette_panel import PalettePanel
 from ui.find_replace import FindReplaceDialog
+from ui.layer_view import LayerView
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Schemedit — Litematica Schematic Editor")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(1000, 640)
         self._schematic: LitematicSchematic | None = None
         self._dirty = False
 
@@ -71,10 +73,20 @@ class MainWindow(QMainWindow):
         self._schematic_panel.setMinimumWidth(240)
         splitter.addWidget(self._schematic_panel)
 
+        # Right side: tab widget containing Palette and Layer View
+        self._tabs = QTabWidget()
+
         self._palette_panel = PalettePanel()
-        self._palette_panel.setMinimumWidth(280)
         self._palette_panel.replace_requested.connect(self._open_find_replace_for)
-        splitter.addWidget(self._palette_panel)
+        self._palette_panel.delete_requested.connect(self._delete_block)
+        self._tabs.addTab(self._palette_panel, "Palette")
+
+        self._layer_view = LayerView()
+        self._layer_view.block_clicked.connect(self._on_layer_block_clicked)
+        self._tabs.addTab(self._layer_view, "Layer View")
+
+        self._tabs.setMinimumWidth(380)
+        splitter.addWidget(self._tabs)
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
@@ -100,6 +112,7 @@ class MainWindow(QMainWindow):
             self._schematic = LitematicSchematic.load(path)
             self._schematic_panel.load(self._schematic)
             self._palette_panel.load(self._schematic)
+            self._layer_view.load(self._schematic)
             self._dirty = False
             self._update_title(path)
             self._set_status(f"Loaded: {os.path.basename(path)}")
@@ -162,15 +175,54 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         if dlg.exec():
-            # Dialog calls refresh_regions internally; refresh the panels
-            self._schematic_panel.load(self._schematic)
-            self._palette_panel.load(self._schematic)
+            self._refresh_all_panels()
             self._dirty = True
             self._update_title(self._schematic.path)
+
+    def _delete_block(self, block_id: str, props: dict) -> None:
+        if self._schematic is None:
+            return
+
+        # Count how many blocks will be removed across all regions
+        total = sum(
+            block_ops.count_block(ri.region, block_id)
+            for ri in self._schematic.regions
+        )
+        if total == 0:
+            QMessageBox.information(self, "Delete Blocks", f"No '{block_id}' blocks found.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Blocks",
+            f"Delete all {total:,} instance(s) of '{block_id}' (replace with air)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        removed = sum(
+            block_ops.find_replace(ri.region, block_id, "minecraft:air")
+            for ri in self._schematic.regions
+        )
+        self._schematic.refresh_regions()
+        self._refresh_all_panels()
+        self._dirty = True
+        self._update_title(self._schematic.path)
+        self._set_status(f"Deleted {removed:,} block(s) of '{block_id}'")
+
+    def _on_layer_block_clicked(self, block_id: str, x: int, y: int, z: int) -> None:
+        self._set_status(f"Selected: {block_id}  at  ({x}, {y}, {z})")
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _refresh_all_panels(self) -> None:
+        """Reload schematic panel, palette, and layer view after any edit."""
+        self._schematic_panel.load(self._schematic)
+        self._palette_panel.load(self._schematic)
+        self._layer_view.refresh()
 
     def _update_title(self, path: str | None) -> None:
         name = os.path.basename(path) if path else "Untitled"
