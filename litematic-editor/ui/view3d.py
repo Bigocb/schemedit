@@ -13,7 +13,8 @@ import math
 import numpy as np
 import moderngl
 import glm
-from PyQt6.QtWidgets import QOpenGLWidget, QLabel
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+from PyQt6.QtWidgets import QLabel
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QWheelEvent, QMouseEvent, QKeyEvent, QSurfaceFormat
 from core.schematic import LitematicSchematic
@@ -74,6 +75,8 @@ class View3D(QOpenGLWidget):
         self._vao: moderngl.VertexArray | None = None
         self._vertex_count = 0
         self._schematic: LitematicSchematic | None = None
+        # Mesh data buffered here if load() is called before initializeGL()
+        self._pending_data: np.ndarray | None = None
 
         # ── Camera ──
         self._cam_pos = glm.vec3(8.0, 8.0, 30.0)
@@ -125,6 +128,13 @@ class View3D(QOpenGLWidget):
         except Exception as e:
             print(f"[View3D] Shader compilation error: {e}")
             self.ctx = None
+            return
+
+        # Upload any mesh data that arrived before the GL context existed
+        if self._pending_data is not None:
+            self._upload_mesh(self._pending_data)
+            self._pending_data = None
+            self.update()
 
     def resizeGL(self, w: int, h: int) -> None:
         if h == 0:
@@ -144,7 +154,7 @@ class View3D(QOpenGLWidget):
             return
 
         mvp = self._projection * self._view_matrix()
-        self.prog['mvp'].write(bytes(glm.value_ptr(mvp)))
+        self.prog['mvp'].write(bytes(mvp))
         self._vao.render(moderngl.TRIANGLES, self._vertex_count)
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -179,16 +189,23 @@ class View3D(QOpenGLWidget):
             self._yaw   = -90.0
             self._pitch = -15.0
 
-        self._upload_mesh(data)
-        self.update()
+        if self.ctx is not None:
+            self._upload_mesh(data)
+            self.update()
+        else:
+            # GL not ready yet — store data; initializeGL() will pick it up
+            self._pending_data = data
 
     def refresh(self) -> None:
         """Rebuild mesh after edits (keeps camera position)."""
         if self._schematic is not None and self._schematic.regions:
             region = self._schematic.regions[0].region
             data = build_mesh(region)
-            self._upload_mesh(data)
-            self.update()
+            if self.ctx is not None:
+                self._upload_mesh(data)
+                self.update()
+            else:
+                self._pending_data = data
 
     def clear(self) -> None:
         """Release GPU buffers and show placeholder."""
@@ -301,6 +318,7 @@ class View3D(QOpenGLWidget):
             [(self._vbo, '3f 3f 3f', 'in_position', 'in_normal', 'in_color')],
         )
         self._vertex_count = len(data)
+        self._hint.hide()
 
     def _free_buffers(self) -> None:
         if self._vao is not None:
