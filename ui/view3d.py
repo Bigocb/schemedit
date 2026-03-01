@@ -92,6 +92,7 @@ class View3D(QOpenGLWidget):
         self._last_mouse_y = 0
         self._keys_held: set[Qt.Key] = set()
         self._move_speed = 10.0   # blocks per second
+        self._velocity = glm.vec3(0.0, 0.0, 0.0)  # for smooth damped movement
 
         # ── Tick timer (fly movement) ──
         self._timer = QTimer(self)
@@ -139,9 +140,11 @@ class View3D(QOpenGLWidget):
     def resizeGL(self, w: int, h: int) -> None:
         if h == 0:
             h = 1
-        self._projection = glm.perspective(glm.radians(60.0), w / h, 0.1, 2000.0)
+        dpr = self.devicePixelRatio()
+        pw, ph = int(w * dpr), int(h * dpr)
+        self._projection = glm.perspective(glm.radians(60.0), pw / ph, 0.1, 2000.0)
         if self.ctx:
-            self.ctx.viewport = (0, 0, w, h)
+            self.ctx.viewport = (0, 0, pw, ph)
 
     def paintGL(self) -> None:
         if self.ctx is None or self.prog is None:
@@ -161,7 +164,8 @@ class View3D(QOpenGLWidget):
         if self._vao is None or self._vertex_count == 0:
             return
 
-        self.ctx.viewport = (0, 0, self.width(), self.height())
+        dpr = self.devicePixelRatio()
+        self.ctx.viewport = (0, 0, int(self.width() * dpr), int(self.height() * dpr))
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.ctx.depth_func = '<'
         self.ctx.disable_direct(0x0C11)  # GL_SCISSOR_TEST — prevent Qt from clipping
@@ -239,6 +243,12 @@ class View3D(QOpenGLWidget):
     def _right(self) -> glm.vec3:
         return glm.normalize(glm.cross(self._forward(), glm.vec3(0, 1, 0)))
 
+    def _forward_horizontal(self) -> glm.vec3:
+        """Forward direction projected onto the XZ plane — WASD stays horizontal
+        regardless of camera pitch (like Minecraft creative flight)."""
+        yaw_r = math.radians(self._yaw)
+        return glm.normalize(glm.vec3(math.cos(yaw_r), 0.0, math.sin(yaw_r)))
+
     def _view_matrix(self) -> glm.mat4:
         fwd = self._forward()
         return glm.lookAt(self._cam_pos, self._cam_pos + fwd, glm.vec3(0, 1, 0))
@@ -254,28 +264,33 @@ class View3D(QOpenGLWidget):
     # ── Tick (movement) ────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
-        if not self._keys_held:
-            return
-        dt = 0.016  # seconds per frame (matches 16ms timer)
-        speed = self._move_speed * dt
-        fwd   = self._forward()
-        right = self._right()
-        up    = glm.vec3(0, 1, 0)
+        dt    = 0.016  # seconds per frame (matches 16ms timer)
+        fwd_h = self._forward_horizontal()   # XZ-plane only — no pitch drift
+        right = glm.normalize(glm.cross(fwd_h, glm.vec3(0, 1, 0)))
+        up    = glm.vec3(0.0, 1.0, 0.0)
 
+        # Build target velocity from held keys (zero if no keys pressed)
+        target = glm.vec3(0.0, 0.0, 0.0)
         if Qt.Key.Key_W in self._keys_held:
-            self._cam_pos += fwd   * speed
+            target += fwd_h * self._move_speed
         if Qt.Key.Key_S in self._keys_held:
-            self._cam_pos -= fwd   * speed
+            target -= fwd_h * self._move_speed
         if Qt.Key.Key_A in self._keys_held:
-            self._cam_pos -= right * speed
+            target -= right * self._move_speed
         if Qt.Key.Key_D in self._keys_held:
-            self._cam_pos += right * speed
+            target += right * self._move_speed
         if Qt.Key.Key_Q in self._keys_held:
-            self._cam_pos -= up    * speed
+            target -= up * self._move_speed
         if Qt.Key.Key_E in self._keys_held:
-            self._cam_pos += up    * speed
+            target += up * self._move_speed
 
-        self.update()
+        # Soft lerp toward target — gives smooth acceleration and deceleration
+        self._velocity = glm.mix(self._velocity, target, 0.22)
+
+        vel_len = glm.length(self._velocity)
+        if vel_len > 0.01:
+            self._cam_pos += self._velocity * dt
+            self.update()
 
     # ── Input events ───────────────────────────────────────────────────────────
 
