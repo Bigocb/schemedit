@@ -117,7 +117,7 @@ class View3D(QOpenGLWidget):
         try:
             self.ctx = moderngl.create_context()
         except Exception as e:
-            print(f"[View3D] Failed to create moderngl context: {e}")
+            print(f"[View3D] Failed to create OpenGL context: {e}")
             return
 
         try:
@@ -147,19 +147,28 @@ class View3D(QOpenGLWidget):
         if self.ctx is None or self.prog is None:
             return
 
+        # Upload any pending mesh data — we're inside Qt's GL callback so the
+        # context is current and Qt's FBO is properly set up.
+        if self._pending_data is not None:
+            self._upload_mesh(self._pending_data)
+            self._pending_data = None
+
         # Qt composites via an internal FBO — render into it, not FBO 0.
         qt_fbo = self.ctx.detect_framebuffer(self.defaultFramebufferObject())
         qt_fbo.use()
-        qt_fbo.clear(0.15, 0.17, 0.20)   # dark grey background
-        self.ctx.enable(moderngl.DEPTH_TEST)
+        qt_fbo.clear(0.15, 0.17, 0.20, 1.0)
 
         if self._vao is None or self._vertex_count == 0:
             return
 
         self.ctx.viewport = (0, 0, self.width(), self.height())
+        self.ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+        self.ctx.depth_func = '<'
+        self.ctx.disable_direct(0x0C11)  # GL_SCISSOR_TEST — prevent Qt from clipping
 
+        # bytes(glm.mat4) is row-major; GL expects column-major, so transpose first.
         mvp = self._projection * self._view_matrix()
-        self.prog['mvp'].write(bytes(mvp))
+        self.prog['mvp'].write(bytes(glm.transpose(mvp)))
         self._vao.render(moderngl.TRIANGLES, self._vertex_count)
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -194,23 +203,18 @@ class View3D(QOpenGLWidget):
             self._yaw   = -90.0
             self._pitch = -15.0
 
-        if self.ctx is not None:
-            self._upload_mesh(data)
-            self.update()
-        else:
-            # GL not ready yet — store data; initializeGL() will pick it up
-            self._pending_data = data
+        # Always buffer — upload happens inside paintGL (safe Qt GL callback)
+        self._pending_data = data
+        self.update()
 
     def refresh(self) -> None:
         """Rebuild mesh after edits (keeps camera position)."""
         if self._schematic is not None and self._schematic.regions:
             region = self._schematic.regions[0].region
             data = build_mesh(region)
-            if self.ctx is not None:
-                self._upload_mesh(data)
-                self.update()
-            else:
-                self._pending_data = data
+            # Always buffer — upload happens inside paintGL
+            self._pending_data = data
+            self.update()
 
     def clear(self) -> None:
         """Release GPU buffers and show placeholder."""
@@ -306,8 +310,9 @@ class View3D(QOpenGLWidget):
     # ── GPU buffer management ──────────────────────────────────────────────────
 
     def _upload_mesh(self, data: np.ndarray) -> None:
-        """Upload a float32 (N, 9) vertex array to the GPU."""
-        self.makeCurrent()
+        """Upload a float32 (N, 9) vertex array to the GPU.
+        Must only be called from initializeGL or paintGL (Qt GL callbacks).
+        """
         if self.ctx is None or self.prog is None:
             return
 
@@ -317,13 +322,16 @@ class View3D(QOpenGLWidget):
             self._vertex_count = 0
             return
 
-        self._vbo = self.ctx.buffer(data.tobytes())
-        self._vao = self.ctx.vertex_array(
-            self.prog,
-            [(self._vbo, '3f 3f 3f', 'in_position', 'in_normal', 'in_color')],
-        )
-        self._vertex_count = len(data)
-        self._hint.hide()
+        try:
+            self._vbo = self.ctx.buffer(data.tobytes())
+            self._vao = self.ctx.vertex_array(
+                self.prog,
+                [(self._vbo, '3f 3f 3f', 'in_position', 'in_normal', 'in_color')],
+            )
+            self._vertex_count = len(data)
+            self._hint.hide()
+        except Exception as e:
+            print(f"[View3D] mesh upload error: {type(e).__name__}: {e}")
 
     def _free_buffers(self) -> None:
         if self._vao is not None:
