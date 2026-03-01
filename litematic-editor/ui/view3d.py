@@ -21,7 +21,7 @@ from core.schematic import LitematicSchematic
 from core.mesh_builder import build_mesh
 
 
-# ── GLSL shaders ──────────────────────────────────────────────────────────────
+# -- GLSL shaders --------------------------------------------------------------
 
 _VERT_SRC = """
 #version 330
@@ -51,7 +51,7 @@ void main() {
 """
 
 
-# ── Main widget ────────────────────────────────────────────────────────────────
+# -- Main widget ---------------------------------------------------------------
 
 class View3D(QOpenGLWidget):
     """3D voxel renderer embedded in the Qt tab widget."""
@@ -68,7 +68,7 @@ class View3D(QOpenGLWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(400, 300)
 
-        # ── ModernGL objects (set in initializeGL) ──
+        # -- ModernGL objects (set in initializeGL) --
         self.ctx: moderngl.Context | None = None
         self.prog: moderngl.Program | None = None
         self._vbo: moderngl.Buffer | None = None
@@ -78,28 +78,28 @@ class View3D(QOpenGLWidget):
         # Mesh data buffered here if load() is called before initializeGL()
         self._pending_data: np.ndarray | None = None
 
-        # ── Camera ──
+        # -- Camera --
         self._cam_pos = glm.vec3(8.0, 8.0, 30.0)
-        self._yaw   = -90.0   # degrees — look roughly toward -Z initially
-        self._pitch = -20.0   # degrees — look slightly down
+        self._yaw   = -90.0   # degrees
+        self._pitch = -20.0   # degrees
 
-        # ── Projection ──
+        # -- Projection --
         self._projection = glm.mat4(1.0)
 
-        # ── Input state ──
+        # -- Input state --
         self._right_btn_held = False
         self._last_mouse_x = 0
         self._last_mouse_y = 0
         self._keys_held: set[Qt.Key] = set()
         self._move_speed = 10.0   # blocks per second
 
-        # ── Tick timer (fly movement) ──
+        # -- Tick timer (fly movement) --
         self._timer = QTimer(self)
         self._timer.setInterval(16)   # ~60 fps
         self._timer.timeout.connect(self._tick)
         self._timer.start()
 
-        # ── Hint overlay label (shown before any schematic is loaded) ──
+        # -- Hint overlay label --
         self._hint = QLabel(
             "Open a schematic, then click here to move the camera.\n"
             "Right-drag: look  |  WASD: fly  |  Q/E: up/down  |  Scroll: speed",
@@ -111,7 +111,7 @@ class View3D(QOpenGLWidget):
         self._hint.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self._hint.adjustSize()
 
-    # ── OpenGL lifecycle ───────────────────────────────────────────────────────
+    # -- OpenGL lifecycle ------------------------------------------------------
 
     def initializeGL(self) -> None:
         try:
@@ -148,7 +148,7 @@ class View3D(QOpenGLWidget):
             return
 
         self.ctx.clear(0.15, 0.17, 0.20)
-        self.ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.DEPTH_TEST)
 
         if self._vao is None or self._vertex_count == 0:
             return
@@ -157,7 +157,7 @@ class View3D(QOpenGLWidget):
         self.prog['mvp'].write(bytes(mvp))
         self._vao.render(moderngl.TRIANGLES, self._vertex_count)
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # -- Public API ------------------------------------------------------------
 
     def load(self, schematic: LitematicSchematic) -> None:
         """Build mesh from schematic and upload to GPU. Reset camera to a good vantage."""
@@ -165,13 +165,11 @@ class View3D(QOpenGLWidget):
             self.clear()
             return
 
-        # Build mesh on the CPU (may take a moment for large schematics)
         region = schematic.regions[0].region
         data = build_mesh(region)
-
         self._schematic = schematic
 
-        # Center camera on the schematic
+        # Position camera to frame the whole schematic
         xs = list(region.xrange())
         ys = list(region.yrange())
         zs = list(region.zrange())
@@ -193,7 +191,6 @@ class View3D(QOpenGLWidget):
             self._upload_mesh(data)
             self.update()
         else:
-            # GL not ready yet — store data; initializeGL() will pick it up
             self._pending_data = data
 
     def refresh(self) -> None:
@@ -208,12 +205,12 @@ class View3D(QOpenGLWidget):
                 self._pending_data = data
 
     def clear(self) -> None:
-        """Release GPU buffers and show placeholder."""
+        """Release GPU buffers."""
         self._free_buffers()
         self._vertex_count = 0
         self.update()
 
-    # ── Camera helpers ─────────────────────────────────────────────────────────
+    # -- Camera helpers --------------------------------------------------------
 
     def _forward(self) -> glm.vec3:
         yaw_r   = math.radians(self._yaw)
@@ -230,12 +227,12 @@ class View3D(QOpenGLWidget):
         fwd = self._forward()
         return glm.lookAt(self._cam_pos, self._cam_pos + fwd, glm.vec3(0, 1, 0))
 
-    # ── Tick (movement) ────────────────────────────────────────────────────────
+    # -- Tick (movement) -------------------------------------------------------
 
     def _tick(self) -> None:
         if not self._keys_held:
             return
-        dt = 0.016  # seconds per frame (matches 16ms timer)
+        dt = 0.016
         speed = self._move_speed * dt
         fwd   = self._forward()
         right = self._right()
@@ -256,7 +253,7 @@ class View3D(QOpenGLWidget):
 
         self.update()
 
-    # ── Input events ───────────────────────────────────────────────────────────
+    # -- Input events ----------------------------------------------------------
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.RightButton:
@@ -276,10 +273,8 @@ class View3D(QOpenGLWidget):
             dy = event.position().y() - self._last_mouse_y
             self._last_mouse_x = event.position().x()
             self._last_mouse_y = event.position().y()
-
-            sensitivity = 0.2
-            self._yaw   += dx * sensitivity
-            self._pitch -= dy * sensitivity
+            self._yaw   += dx * 0.2
+            self._pitch -= dy * 0.2
             self._pitch = max(-89.0, min(89.0, self._pitch))
             self.update()
         super().mouseMoveEvent(event)
@@ -298,7 +293,7 @@ class View3D(QOpenGLWidget):
         self._keys_held.discard(Qt.Key(event.key()))
         super().keyReleaseEvent(event)
 
-    # ── GPU buffer management ──────────────────────────────────────────────────
+    # -- GPU buffer management -------------------------------------------------
 
     def _upload_mesh(self, data: np.ndarray) -> None:
         """Upload a float32 (N, 9) vertex array to the GPU."""

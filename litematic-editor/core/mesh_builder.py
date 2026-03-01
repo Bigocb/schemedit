@@ -12,10 +12,9 @@ from litemapy import Region
 from core.block_colors import block_rgb, AIR_IDS
 
 # ------------------------------------------------------------------
-# Face definitions: (normal, 4 corner offsets in CCW order when
-# viewed from outside the cube)
-# Each corner offset is (dx, dy, dz) added to the block position.
-# We split each quad into 2 triangles: [0,1,2] and [0,2,3].
+# Face definitions: (normal, 4 corner offsets, neighbour offset)
+# Corners are ordered so that reversing to [0,2,1] / [0,3,2] gives
+# CCW winding when viewed from outside the cube (OpenGL front-face).
 # ------------------------------------------------------------------
 _FACES: list[tuple[tuple[float, float, float], list[tuple[int, int, int]], tuple[int, int, int]]] = [
     # (normal,  quad corners,                              neighbour offset)
@@ -40,7 +39,7 @@ def build_mesh(region: Region) -> np.ndarray:
     """
     Build a face-culled voxel mesh for the region.
     Returns a float32 numpy array of shape (V, 9) or shape (0, 9) if empty.
-    Columns: x, y, z, nx, ny, nz, r, g, b  (RGB in 0.0–1.0 range)
+    Columns: x, y, z, nx, ny, nz, r, g, b  (RGB in 0.0-1.0 range)
     """
     xs_list = list(region.xrange())
     ys_list = list(region.yrange())
@@ -69,12 +68,12 @@ def build_mesh(region: Region) -> np.ndarray:
                     # Quad corners in world space
                     c = [(x + dx, y + dy, z + dz) for dx, dy, dz in corners]
 
-                    # Triangle 1: c[0], c[1], c[2]
-                    for cx, cy, cz in (c[0], c[1], c[2]):
-                        vertices.append((cx, cy, cz, nx, ny, nz, r, g, b))
-                    # Triangle 2: c[0], c[2], c[3]
-                    for cx, cy, cz in (c[0], c[2], c[3]):
-                        vertices.append((cx, cy, cz, nx, ny, nz, r, g, b))
+                    # Triangles use reversed order (c[0],c[2],c[1] / c[0],c[3],c[2])
+                    # to produce CCW winding when viewed from outside the cube.
+                    for vx, vy, vz in (c[0], c[2], c[1]):
+                        vertices.append((vx, vy, vz, nx, ny, nz, r, g, b))
+                    for vx, vy, vz in (c[0], c[3], c[2]):
+                        vertices.append((vx, vy, vz, nx, ny, nz, r, g, b))
 
     if not vertices:
         return np.zeros((0, 9), dtype=np.float32)
