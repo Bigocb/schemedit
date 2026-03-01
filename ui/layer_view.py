@@ -171,8 +171,9 @@ class LayerView(QWidget):
     # Emitted when the user left-clicks a block — (block_id, x, y, z)
     block_clicked = pyqtSignal(str, int, int, int)
     # Emitted from the right-click context menu
-    replace_requested = pyqtSignal(str, dict)   # block_id, properties
-    delete_requested  = pyqtSignal(str, dict)   # block_id, properties
+    replace_requested  = pyqtSignal(str, dict)      # block_id, properties
+    delete_requested   = pyqtSignal(str, dict)      # block_id, properties  (all of type)
+    delete_at_requested = pyqtSignal(int, int, int) # x, y, z  (single block)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -374,8 +375,18 @@ class LayerView(QWidget):
         props = dict(block.properties())
         display = block.id.replace("minecraft:", "")
 
+        # Capture coords for lambdas (avoid late-binding issues)
+        bx, by, bz = x, y, z
+
         menu = QMenu(self)
-        replace_act = QAction(f"Replace '{display}'…", self)
+
+        delete_one_act = QAction(f"Delete this block  ({bx}, {by}, {bz})", self)
+        delete_one_act.triggered.connect(lambda: self.delete_at_requested.emit(bx, by, bz))
+        menu.addAction(delete_one_act)
+
+        menu.addSeparator()
+
+        replace_act = QAction(f"Replace all '{display}'…", self)
         replace_act.triggered.connect(lambda: self.replace_requested.emit(block.id, props))
         menu.addAction(replace_act)
 

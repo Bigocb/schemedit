@@ -85,6 +85,7 @@ class MainWindow(QMainWindow):
         self._layer_view.block_clicked.connect(self._on_layer_block_clicked)
         self._layer_view.replace_requested.connect(self._open_find_replace_for)
         self._layer_view.delete_requested.connect(self._delete_block)
+        self._layer_view.delete_at_requested.connect(self._delete_block_at)
         self._tabs.addTab(self._layer_view, "Layer View")
 
         self._tabs.setMinimumWidth(380)
@@ -212,6 +213,20 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self._update_title(self._schematic.path)
         self._set_status(f"Deleted {removed:,} block(s) of '{block_id}'")
+
+    def _delete_block_at(self, x: int, y: int, z: int) -> None:
+        if self._schematic is None:
+            return
+        # Determine which region contains this coordinate
+        for ri in self._schematic.regions:
+            if x in ri.region.xrange() and y in ri.region.yrange() and z in ri.region.zrange():
+                block_ops.delete_at(ri.region, x, y, z)
+                self._schematic.refresh_regions()
+                self._refresh_all_panels()
+                self._dirty = True
+                self._update_title(self._schematic.path)
+                self._set_status(f"Deleted block at ({x}, {y}, {z})")
+                return
 
     def _on_layer_block_clicked(self, block_id: str, x: int, y: int, z: int) -> None:
         self._set_status(f"Selected: {block_id}  at  ({x}, {y}, {z})")

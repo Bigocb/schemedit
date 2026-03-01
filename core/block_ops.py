@@ -44,6 +44,11 @@ def count_block(region: Region, block_id: str) -> int:
     return total
 
 
+def delete_at(region: Region, x: int, y: int, z: int) -> None:
+    """Replace a single block position with air."""
+    region[x, y, z] = BlockState("minecraft:air")
+
+
 def _props_match(block_props: dict, filter_props: dict) -> bool:
     for k, v in filter_props.items():
         if block_props.get(k) != v:
