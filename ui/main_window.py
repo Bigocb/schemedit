@@ -8,6 +8,7 @@ from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtCore import Qt
 from core.schematic import LitematicSchematic
 from core import block_ops
+from core.block_ops import set_block
 from ui.schematic_panel import SchematicPanel
 from ui.palette_panel import PalettePanel
 from ui.find_replace import FindReplaceDialog
@@ -87,6 +88,7 @@ class MainWindow(QMainWindow):
         self._layer_view.replace_requested.connect(self._open_find_replace_for)
         self._layer_view.delete_requested.connect(self._delete_block)
         self._layer_view.delete_at_requested.connect(self._delete_block_at)
+        self._layer_view.set_block_at.connect(self._set_block_at)
         self._tabs.addTab(self._layer_view, "Layer View")
 
         self._view3d = View3D()
@@ -231,6 +233,19 @@ class MainWindow(QMainWindow):
                 self._dirty = True
                 self._update_title(self._schematic.path)
                 self._set_status(f"Deleted block at ({x}, {y}, {z})")
+                return
+
+    def _set_block_at(self, x: int, y: int, z: int, block_id: str) -> None:
+        if self._schematic is None:
+            return
+        for ri in self._schematic.regions:
+            if x in ri.region.xrange() and y in ri.region.yrange() and z in ri.region.zrange():
+                set_block(ri.region, x, y, z, block_id)
+                self._schematic.refresh_regions()
+                self._refresh_all_panels()
+                self._dirty = True
+                self._update_title(self._schematic.path)
+                self._set_status(f"Placed '{block_id}' at ({x}, {y}, {z})")
                 return
 
     def _on_layer_block_clicked(self, block_id: str, x: int, y: int, z: int) -> None:

@@ -49,6 +49,11 @@ def delete_at(region: Region, x: int, y: int, z: int) -> None:
     region[x, y, z] = BlockState("minecraft:air")
 
 
+def set_block(region: Region, x: int, y: int, z: int, block_id: str) -> None:
+    """Place a specific block at position (x, y, z)."""
+    region[x, y, z] = BlockState(block_id)
+
+
 def _props_match(block_props: dict, filter_props: dict) -> bool:
     for k, v in filter_props.items():
         if block_props.get(k) != v:

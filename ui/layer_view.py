@@ -2,7 +2,8 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QSpinBox, QSlider, QGraphicsView, QGraphicsScene,
-    QGraphicsPixmapItem, QSizePolicy, QMenu
+    QGraphicsPixmapItem, QSizePolicy, QMenu,
+    QCheckBox, QLineEdit, QInputDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap, QImage, QPainter, QWheelEvent, QMouseEvent, QCursor, QAction
@@ -72,6 +73,8 @@ class LayerView(QWidget):
     replace_requested  = pyqtSignal(str, dict)      # block_id, properties
     delete_requested   = pyqtSignal(str, dict)      # block_id, properties  (all of type)
     delete_at_requested = pyqtSignal(int, int, int) # x, y, z  (single block)
+    # Emitted when paint mode places / replaces a single block
+    set_block_at = pyqtSignal(int, int, int, str)   # x, y, z, block_id
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,6 +106,22 @@ class LayerView(QWidget):
         self._region_label = QLabel("(no schematic)")
         ctrl.addWidget(self._region_label)
         layout.addLayout(ctrl)
+
+        # ── Paint mode controls ──
+        paint_row = QHBoxLayout()
+        self._paint_cb = QCheckBox("Paint mode")
+        self._paint_cb.setToolTip(
+            "Left-click a cell to place the active block.\n"
+            "Works on both filled and empty (air) cells."
+        )
+        paint_row.addWidget(self._paint_cb)
+        paint_row.addWidget(QLabel("Block:"))
+        self._paint_block_edit = QLineEdit("minecraft:stone")
+        self._paint_block_edit.setFixedWidth(220)
+        self._paint_block_edit.setPlaceholderText("e.g. minecraft:stone  (namespace optional)")
+        paint_row.addWidget(self._paint_block_edit)
+        paint_row.addStretch()
+        layout.addLayout(paint_row)
 
         # ── Graphics view ──
         self._scene = QGraphicsScene(self)
@@ -258,38 +277,77 @@ class LayerView(QWidget):
 
     def _on_click(self, px: int, pz: int) -> None:
         result = self._resolve_block(px, pz)
-        if result:
-            block, x, y, z = result
-            self.block_clicked.emit(block.id, x, y, z)
+        if not result:
+            return
+        block, x, y, z = result
+        if self._paint_cb.isChecked():
+            block_id = self._paint_block_edit.text().strip()
+            if not block_id:
+                return
+            if ':' not in block_id:
+                block_id = 'minecraft:' + block_id
+            self.set_block_at.emit(x, y, z, block_id)
+            return
+        self.block_clicked.emit(block.id, x, y, z)
 
     def _on_right_click(self, px: int, pz: int) -> None:
         result = self._resolve_block(px, pz)
         if not result:
             return
         block, x, y, z = result
-        if block.id in _AIR_IDS:
-            return  # no menu for air
-
-        props = dict(block.properties())
-        display = block.id.replace("minecraft:", "")
+        is_air = block.id in _AIR_IDS
 
         # Capture coords for lambdas (avoid late-binding issues)
         bx, by, bz = x, y, z
 
         menu = QMenu(self)
 
-        delete_one_act = QAction(f"Delete this block  ({bx}, {by}, {bz})", self)
-        delete_one_act.triggered.connect(lambda: self.delete_at_requested.emit(bx, by, bz))
-        menu.addAction(delete_one_act)
+        if is_air:
+            place_act = QAction(f"Place block here…  ({bx}, {by}, {bz})", self)
+            place_act.triggered.connect(lambda: self._prompt_set_block(bx, by, bz))
+            menu.addAction(place_act)
+        else:
+            props = dict(block.properties())
+            display = block.id.replace("minecraft:", "")
 
-        menu.addSeparator()
+            replace_one_act = QAction(f"Replace this block…  ({bx}, {by}, {bz})", self)
+            replace_one_act.triggered.connect(lambda: self._prompt_set_block(bx, by, bz))
+            menu.addAction(replace_one_act)
 
-        replace_act = QAction(f"Replace all '{display}'…", self)
-        replace_act.triggered.connect(lambda: self.replace_requested.emit(block.id, props))
-        menu.addAction(replace_act)
+            use_as_act = QAction(f"Use as active block  ('{display}')", self)
+            _bid = block.id  # capture
+            use_as_act.triggered.connect(lambda: self._paint_block_edit.setText(_bid))
+            menu.addAction(use_as_act)
 
-        delete_act = QAction(f"Delete all '{display}'…", self)
-        delete_act.triggered.connect(lambda: self.delete_requested.emit(block.id, props))
-        menu.addAction(delete_act)
+            menu.addSeparator()
+
+            delete_one_act = QAction(f"Delete this block  ({bx}, {by}, {bz})", self)
+            delete_one_act.triggered.connect(lambda: self.delete_at_requested.emit(bx, by, bz))
+            menu.addAction(delete_one_act)
+
+            menu.addSeparator()
+
+            replace_act = QAction(f"Replace all '{display}'…", self)
+            replace_act.triggered.connect(lambda: self.replace_requested.emit(block.id, props))
+            menu.addAction(replace_act)
+
+            delete_act = QAction(f"Delete all '{display}'…", self)
+            delete_act.triggered.connect(lambda: self.delete_requested.emit(block.id, props))
+            menu.addAction(delete_act)
 
         menu.exec(QCursor.pos())
+
+    def _prompt_set_block(self, x: int, y: int, z: int) -> None:
+        """Show an input dialog and emit set_block_at with the chosen block ID."""
+        default = self._paint_block_edit.text().strip() or "minecraft:stone"
+        block_id, ok = QInputDialog.getText(
+            self, "Place / Replace Block",
+            f"Block ID to place at ({x}, {y}, {z}):",
+            text=default,
+        )
+        if not ok or not block_id.strip():
+            return
+        block_id = block_id.strip()
+        if ':' not in block_id:
+            block_id = 'minecraft:' + block_id
+        self.set_block_at.emit(x, y, z, block_id)

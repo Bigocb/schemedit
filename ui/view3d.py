@@ -102,7 +102,7 @@ class View3D(QOpenGLWidget):
         # ── Hint overlay label (shown before any schematic is loaded) ──
         self._hint = QLabel(
             "Open a schematic, then click here to move the camera.\n"
-            "Right-drag: look  |  WASD: fly  |  Q/E: up/down  |  Scroll: speed",
+            "Right-drag: look  |  WASD: fly  |  Q/E: up/down  |  Scroll: speed  |  R: reset view",
             self,
         )
         self._hint.setStyleSheet(
@@ -162,7 +162,7 @@ class View3D(QOpenGLWidget):
             return
 
         self.ctx.viewport = (0, 0, self.width(), self.height())
-        self.ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+        self.ctx.enable(moderngl.DEPTH_TEST)
         self.ctx.depth_func = '<'
         self.ctx.disable_direct(0x0C11)  # GL_SCISSOR_TEST — prevent Qt from clipping
 
@@ -198,10 +198,14 @@ class View3D(QOpenGLWidget):
                 (max(ys) - min(ys)) ** 2 +
                 (max(zs) - min(zs)) ** 2
             )
-            dist = max(diagonal * 0.8, 20.0)
+            dist = max(diagonal * 1.1, 25.0)
             self._cam_pos = glm.vec3(cx, cy + diagonal * 0.2, cz + dist)
             self._yaw   = -90.0
             self._pitch = -15.0
+            # Save for R-key reset
+            self._cam_start_pos   = glm.vec3(self._cam_pos)
+            self._cam_start_yaw   = self._yaw
+            self._cam_start_pitch = self._pitch
 
         # Always buffer — upload happens inside paintGL (safe Qt GL callback)
         self._pending_data = data
@@ -238,6 +242,14 @@ class View3D(QOpenGLWidget):
     def _view_matrix(self) -> glm.mat4:
         fwd = self._forward()
         return glm.lookAt(self._cam_pos, self._cam_pos + fwd, glm.vec3(0, 1, 0))
+
+    def _reset_camera(self) -> None:
+        """Return camera to the initial overview position (R key)."""
+        if hasattr(self, '_cam_start_pos'):
+            self._cam_pos   = glm.vec3(self._cam_start_pos)
+            self._yaw       = self._cam_start_yaw
+            self._pitch     = self._cam_start_pitch
+            self.update()
 
     # ── Tick (movement) ────────────────────────────────────────────────────────
 
@@ -300,6 +312,9 @@ class View3D(QOpenGLWidget):
             self._move_speed = max(self._move_speed / 1.2, 0.5)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_R:
+            self._reset_camera()
+            return
         self._keys_held.add(Qt.Key(event.key()))
         super().keyPressEvent(event)
 
