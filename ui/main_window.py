@@ -12,6 +12,7 @@ from ui.schematic_panel import SchematicPanel
 from ui.palette_panel import PalettePanel
 from ui.find_replace import FindReplaceDialog
 from ui.layer_view import LayerView
+from ui.view3d import View3D
 
 
 class MainWindow(QMainWindow):
@@ -88,6 +89,9 @@ class MainWindow(QMainWindow):
         self._layer_view.delete_at_requested.connect(self._delete_block_at)
         self._tabs.addTab(self._layer_view, "Layer View")
 
+        self._view3d = View3D()
+        self._tabs.addTab(self._view3d, "3D View")
+
         self._tabs.setMinimumWidth(380)
         splitter.addWidget(self._tabs)
 
@@ -116,6 +120,7 @@ class MainWindow(QMainWindow):
             self._schematic_panel.load(self._schematic)
             self._palette_panel.load(self._schematic)
             self._layer_view.load(self._schematic)
+            self._view3d.load(self._schematic)
             self._dirty = False
             self._update_title(path)
             self._set_status(f"Loaded: {os.path.basename(path)}")
@@ -240,6 +245,7 @@ class MainWindow(QMainWindow):
         self._schematic_panel.load(self._schematic)
         self._palette_panel.load(self._schematic)
         self._layer_view.refresh()
+        self._view3d.refresh()
 
     def _update_title(self, path: str | None) -> None:
         name = os.path.basename(path) if path else "Untitled"
