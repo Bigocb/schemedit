@@ -2,10 +2,10 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QSpinBox, QSlider, QGraphicsView, QGraphicsScene,
-    QGraphicsPixmapItem, QSizePolicy
+    QGraphicsPixmapItem, QSizePolicy, QMenu
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF
-from PyQt6.QtGui import QColor, QPixmap, QImage, QPainter, QWheelEvent, QMouseEvent
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPixmap, QImage, QPainter, QWheelEvent, QMouseEvent, QCursor, QAction
 from core.schematic import LitematicSchematic, RegionInfo
 
 # Pixels per block cell at 1× zoom
@@ -168,8 +168,11 @@ class _SchematicGraphicsView(QGraphicsView):
 class LayerView(QWidget):
     """2D top-down layer viewer for a Litematica schematic."""
 
-    # Emitted when the user clicks a block — (block_id, x, y, z)
+    # Emitted when the user left-clicks a block — (block_id, x, y, z)
     block_clicked = pyqtSignal(str, int, int, int)
+    # Emitted from the right-click context menu
+    replace_requested = pyqtSignal(str, dict)   # block_id, properties
+    delete_requested  = pyqtSignal(str, dict)   # block_id, properties
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -208,6 +211,7 @@ class LayerView(QWidget):
         self._view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._view.block_hovered.connect(self._on_hover)
         self._view.block_clicked.connect(self._on_click)
+        self._view.block_right_clicked.connect(self._on_right_click)
         layout.addWidget(self._view, stretch=1)
 
         # ── Status / hover label ──
@@ -330,36 +334,53 @@ class LayerView(QWidget):
         self._pixmap_item = self._scene.addPixmap(pixmap)
         self._scene.setSceneRect(0, 0, pixmap.width(), pixmap.height())
 
-    def _on_hover(self, px: int, pz: int) -> None:
+    def _resolve_block(self, px: int, pz: int):
+        """Convert pixel-grid coords to (block, x, y, z) or None if out of range."""
         if self._schematic is None:
-            return
+            return None
         ri = self._schematic.regions[0]
         xs = list(ri.region.xrange())
         zs = list(ri.region.zrange())
-        if 0 <= px < len(xs) and 0 <= pz < len(zs):
-            x, z = xs[px], zs[pz]
-            y = self._current_y
-            try:
-                block = ri.region[x, y, z]
-                self._hover_label.setText(
-                    f"{block.id}  at  ({x}, {y}, {z})"
-                )
-            except Exception:
-                self._hover_label.setText("")
+        if not (0 <= px < len(xs) and 0 <= pz < len(zs)):
+            return None
+        x, z, y = xs[px], zs[pz], self._current_y
+        try:
+            return ri.region[x, y, z], x, y, z
+        except Exception:
+            return None
+
+    def _on_hover(self, px: int, pz: int) -> None:
+        result = self._resolve_block(px, pz)
+        if result:
+            block, x, y, z = result
+            self._hover_label.setText(f"{block.id}  at  ({x}, {y}, {z})")
         else:
             self._hover_label.setText("")
 
     def _on_click(self, px: int, pz: int) -> None:
-        if self._schematic is None:
+        result = self._resolve_block(px, pz)
+        if result:
+            block, x, y, z = result
+            self.block_clicked.emit(block.id, x, y, z)
+
+    def _on_right_click(self, px: int, pz: int) -> None:
+        result = self._resolve_block(px, pz)
+        if not result:
             return
-        ri = self._schematic.regions[0]
-        xs = list(ri.region.xrange())
-        zs = list(ri.region.zrange())
-        if 0 <= px < len(xs) and 0 <= pz < len(zs):
-            x, z = xs[px], zs[pz]
-            y = self._current_y
-            try:
-                block = ri.region[x, y, z]
-                self.block_clicked.emit(block.id, x, y, z)
-            except Exception:
-                pass
+        block, x, y, z = result
+        if block.id in _AIR_IDS:
+            return  # no menu for air
+
+        props = dict(block.properties())
+        display = block.id.replace("minecraft:", "")
+
+        menu = QMenu(self)
+        replace_act = QAction(f"Replace '{display}'…", self)
+        replace_act.triggered.connect(lambda: self.replace_requested.emit(block.id, props))
+        menu.addAction(replace_act)
+
+        delete_act = QAction(f"Delete all '{display}'…", self)
+        delete_act.triggered.connect(lambda: self.delete_requested.emit(block.id, props))
+        menu.addAction(delete_act)
+
+        menu.exec(QCursor.pos())

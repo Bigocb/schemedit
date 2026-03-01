@@ -83,6 +83,8 @@ class MainWindow(QMainWindow):
 
         self._layer_view = LayerView()
         self._layer_view.block_clicked.connect(self._on_layer_block_clicked)
+        self._layer_view.replace_requested.connect(self._open_find_replace_for)
+        self._layer_view.delete_requested.connect(self._delete_block)
         self._tabs.addTab(self._layer_view, "Layer View")
 
         self._tabs.setMinimumWidth(380)
