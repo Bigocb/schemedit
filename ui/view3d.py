@@ -33,13 +33,16 @@ _VERT_SRC = """
 in vec3 in_position;
 in vec3 in_normal;
 in vec2 in_uv;
+in vec2 in_uv0_atlas;   // atlas slot origin (u0, v0)
 uniform mat4 mvp;
 out vec3 v_normal;
 out vec2 v_uv;
+out vec2 v_uv0_atlas;
 void main() {
-    gl_Position = mvp * vec4(in_position, 1.0);
-    v_normal = in_normal;
-    v_uv     = in_uv;
+    gl_Position  = mvp * vec4(in_position, 1.0);
+    v_normal     = in_normal;
+    v_uv         = in_uv;
+    v_uv0_atlas  = in_uv0_atlas;
 }
 """
 
@@ -47,13 +50,26 @@ _FRAG_SRC = """
 #version 330
 in vec3 v_normal;
 in vec2 v_uv;
+in vec2 v_uv0_atlas;
 uniform sampler2D tex;
+uniform vec2 atlas_tile_size;   // (tile_w, tile_h) in atlas UV space
 out vec4 fragColor;
 void main() {
-    vec3 light = normalize(vec3(1.0, 2.0, 1.0));
-    float d    = max(dot(v_normal, light), 0.0);
-    vec4 color = texture(tex, v_uv);
-    fragColor  = vec4(color.rgb * (0.35 + 0.65 * d), 1.0);
+    // Tile the atlas slot across a greedy-merged quad using fract().
+    // v_uv goes 0→W (block-counts); fract maps each block to [0,1) within
+    // the atlas slot.  NEAREST filtering means no inter-slot bleeding.
+    vec2 tiled = v_uv0_atlas + fract(v_uv) * atlas_tile_size;
+    vec4 color = texture(tex, tiled);
+
+    // Minecraft-style discrete face shading — same brightness for all faces
+    // of the same orientation, matching the game's look exactly.
+    float shade;
+    if      (v_normal.y >  0.5) shade = 1.00;   // top
+    else if (v_normal.y < -0.5) shade = 0.50;   // bottom
+    else if (abs(v_normal.x) > 0.5) shade = 0.60; // east / west
+    else                            shade = 0.80;  // north / south
+
+    fragColor = vec4(color.rgb * shade, 1.0);
 }
 """
 
@@ -140,6 +156,9 @@ class View3D(QOpenGLWidget):
         self._velocity = glm.vec3(0.0, 0.0, 0.0)  # for smooth damped movement
         # Key bindings — populated after _hint is created below
         self._fly_keys: dict[str, Qt.Key] = {}
+
+        # Atlas tile size in UV space — set in _upload_atlas(), read in paintGL()
+        self._atlas_tile_size: tuple[float, float] = (1.0, 1.0)
 
         # ── Hover highlight ──
         self._hovered_voxel: tuple[int, int, int] | None = None
@@ -254,6 +273,7 @@ class View3D(QOpenGLWidget):
         mvp = self._projection * self._view_matrix()
         self.prog['mvp'].write(bytes(glm.transpose(mvp)))
         self.prog['tex'].value = 0
+        self.prog['atlas_tile_size'].value = self._atlas_tile_size
         self._vao.render(moderngl.TRIANGLES, self._vertex_count)
 
         # Hover highlight — yellow wire-frame cube around the pointed-at block
@@ -699,6 +719,9 @@ class View3D(QOpenGLWidget):
             self._texture = self.ctx.texture((w, h), 4, rgba.tobytes())
             # NEAREST filtering preserves Minecraft's pixel-art look
             self._texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            # Tile size in UV space: each atlas slot is TILE×TILE pixels
+            from core.atlas_builder import TILE, COLS
+            self._atlas_tile_size = (TILE / w, TILE / h)
         except Exception as e:
             print(f"[View3D] atlas upload error: {type(e).__name__}: {e}")
 
@@ -742,7 +765,8 @@ class View3D(QOpenGLWidget):
             self._vbo = self.ctx.buffer(data.tobytes())
             self._vao = self.ctx.vertex_array(
                 self.prog,
-                [(self._vbo, '3f 3f 2f', 'in_position', 'in_normal', 'in_uv')],
+                [(self._vbo, '3f 3f 2f 2f',
+                  'in_position', 'in_normal', 'in_uv', 'in_uv0_atlas')],
             )
             self._vertex_count = len(data)
             self._hint.hide()
