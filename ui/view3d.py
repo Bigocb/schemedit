@@ -19,6 +19,8 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QWheelEvent, QMouseEvent, QKeyEvent, QSurfaceFormat
 from core.schematic import LitematicSchematic
 from core.mesh_builder import build_mesh
+from core.atlas_builder import Atlas
+from core import texture_cache as _tex
 
 
 # ── GLSL shaders ──────────────────────────────────────────────────────────────
@@ -27,26 +29,28 @@ _VERT_SRC = """
 #version 330
 in vec3 in_position;
 in vec3 in_normal;
-in vec3 in_color;
+in vec2 in_uv;
 uniform mat4 mvp;
-out vec3 v_color;
 out vec3 v_normal;
+out vec2 v_uv;
 void main() {
     gl_Position = mvp * vec4(in_position, 1.0);
-    v_color  = in_color;
     v_normal = in_normal;
+    v_uv     = in_uv;
 }
 """
 
 _FRAG_SRC = """
 #version 330
-in vec3 v_color;
 in vec3 v_normal;
+in vec2 v_uv;
+uniform sampler2D tex;
 out vec4 fragColor;
 void main() {
     vec3 light = normalize(vec3(1.0, 2.0, 1.0));
-    float d = max(dot(v_normal, light), 0.0);
-    fragColor = vec4(v_color * (0.35 + 0.65 * d), 1.0);
+    float d    = max(dot(v_normal, light), 0.0);
+    vec4 color = texture(tex, v_uv);
+    fragColor  = vec4(color.rgb * (0.35 + 0.65 * d), 1.0);
 }
 """
 
@@ -73,10 +77,13 @@ class View3D(QOpenGLWidget):
         self.prog: moderngl.Program | None = None
         self._vbo: moderngl.Buffer | None = None
         self._vao: moderngl.VertexArray | None = None
+        self._texture: moderngl.Texture | None = None
         self._vertex_count = 0
         self._schematic: LitematicSchematic | None = None
-        # Mesh data buffered here if load() is called before initializeGL()
+        # Mesh / atlas data buffered here if load() is called before initializeGL()
         self._pending_data: np.ndarray | None = None
+        self._pending_atlas: Atlas | None = None
+        self._atlas: Atlas | None = None   # current atlas (CPU side)
 
         # ── Camera ──
         self._cam_pos = glm.vec3(8.0, 8.0, 30.0)
@@ -103,7 +110,7 @@ class View3D(QOpenGLWidget):
         # ── Hint overlay label (shown before any schematic is loaded) ──
         self._hint = QLabel(
             "Open a schematic, then click here to move the camera.\n"
-            "Right-drag: look  |  WASD: fly  |  Q/E: up/down  |  Scroll: speed  |  R: reset view",
+            "Right-drag: look  |  WASD: fly  |  Q/E: up/down  |  Scroll: zoom  |  Ctrl+Scroll: speed  |  R: reset view",
             self,
         )
         self._hint.setStyleSheet(
@@ -111,6 +118,9 @@ class View3D(QOpenGLWidget):
         )
         self._hint.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self._hint.adjustSize()
+
+        # Refresh atlas slots when background texture downloads complete
+        _tex._manager.batch_ready.connect(self._on_textures_ready)
 
     # ── OpenGL lifecycle ───────────────────────────────────────────────────────
 
@@ -131,7 +141,10 @@ class View3D(QOpenGLWidget):
             self.ctx = None
             return
 
-        # Upload any mesh data that arrived before the GL context existed
+        # Upload any atlas / mesh data that arrived before the GL context existed
+        if self._pending_atlas is not None:
+            self._upload_atlas(self._pending_atlas)
+            self._pending_atlas = None
         if self._pending_data is not None:
             self._upload_mesh(self._pending_data)
             self._pending_data = None
@@ -150,8 +163,11 @@ class View3D(QOpenGLWidget):
         if self.ctx is None or self.prog is None:
             return
 
-        # Upload any pending mesh data — we're inside Qt's GL callback so the
-        # context is current and Qt's FBO is properly set up.
+        # Upload any pending atlas / mesh data inside the Qt GL callback.
+        if self._pending_atlas is not None:
+            self._upload_atlas(self._pending_atlas)
+            self._pending_atlas = None
+
         if self._pending_data is not None:
             self._upload_mesh(self._pending_data)
             self._pending_data = None
@@ -170,9 +186,14 @@ class View3D(QOpenGLWidget):
         self.ctx.depth_func = '<'
         self.ctx.disable_direct(0x0C11)  # GL_SCISSOR_TEST — prevent Qt from clipping
 
+        # Bind atlas texture to unit 0
+        if self._texture:
+            self._texture.use(0)
+
         # bytes(glm.mat4) is row-major; GL expects column-major, so transpose first.
         mvp = self._projection * self._view_matrix()
         self.prog['mvp'].write(bytes(glm.transpose(mvp)))
+        self.prog['tex'].value = 0
         self._vao.render(moderngl.TRIANGLES, self._vertex_count)
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -185,7 +206,16 @@ class View3D(QOpenGLWidget):
 
         # Build mesh on the CPU (may take a moment for large schematics)
         region = schematic.regions[0].region
-        data = build_mesh(region)
+
+        # Collect unique block IDs, build texture atlas, then build UV mesh
+        unique_ids = {
+            region[x, y, z].id
+            for x in region.xrange()
+            for y in region.yrange()
+            for z in region.zrange()
+        }
+        atlas = Atlas(list(unique_ids))
+        data  = build_mesh(region, atlas.uv_map)
 
         self._schematic = schematic
 
@@ -212,16 +242,26 @@ class View3D(QOpenGLWidget):
             self._cam_start_pitch = self._pitch
 
         # Always buffer — upload happens inside paintGL (safe Qt GL callback)
-        self._pending_data = data
+        self._atlas        = atlas
+        self._pending_atlas = atlas
+        self._pending_data  = data
         self.update()
 
     def refresh(self) -> None:
         """Rebuild mesh after edits (keeps camera position)."""
         if self._schematic is not None and self._schematic.regions:
             region = self._schematic.regions[0].region
-            data = build_mesh(region)
-            # Always buffer — upload happens inside paintGL
-            self._pending_data = data
+            unique_ids = {
+                region[x, y, z].id
+                for x in region.xrange()
+                for y in region.yrange()
+                for z in region.zrange()
+            }
+            atlas = Atlas(list(unique_ids))
+            data  = build_mesh(region, atlas.uv_map)
+            self._atlas         = atlas
+            self._pending_atlas = atlas
+            self._pending_data  = data
             self.update()
 
     def clear(self) -> None:
@@ -334,10 +374,18 @@ class View3D(QOpenGLWidget):
         super().mouseMoveEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        if event.angleDelta().y() > 0:
-            self._move_speed = min(self._move_speed * 1.2, 500.0)
+        delta = event.angleDelta().y()
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl + Scroll — adjust fly speed
+            if delta > 0:
+                self._move_speed = min(self._move_speed * 1.2, 500.0)
+            else:
+                self._move_speed = max(self._move_speed / 1.2, 0.5)
         else:
-            self._move_speed = max(self._move_speed / 1.2, 0.5)
+            # Scroll — dolly zoom along the look direction
+            step = self._move_speed * 0.25
+            self._cam_pos += self._forward() * (step if delta > 0 else -step)
+            self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_R:
@@ -352,14 +400,55 @@ class View3D(QOpenGLWidget):
 
     # ── GPU buffer management ──────────────────────────────────────────────────
 
+    def _upload_atlas(self, atlas: Atlas) -> None:
+        """Upload the texture atlas as a GPU texture.
+        Must only be called from initializeGL or paintGL (Qt GL callbacks).
+        """
+        if self.ctx is None:
+            return
+        if self._texture is not None:
+            self._texture.release()
+            self._texture = None
+        try:
+            rgba = atlas.get_rgba()
+            h, w = rgba.shape[:2]
+            self._texture = self.ctx.texture((w, h), 4, rgba.tobytes())
+            # NEAREST filtering preserves Minecraft's pixel-art look
+            self._texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        except Exception as e:
+            print(f"[View3D] atlas upload error: {type(e).__name__}: {e}")
+
+    def _on_textures_ready(self) -> None:
+        """Called (on main thread) when background downloads finish a batch.
+        Refreshes any placeholder slots in the atlas and re-uploads to GPU.
+        """
+        if self._atlas is None or self.ctx is None or self._texture is None:
+            return
+        if self._atlas.refresh_textures():
+            # Re-upload the full atlas texture with updated pixels
+            try:
+                rgba = self._atlas.get_rgba()
+                h, w = rgba.shape[:2]
+                self._texture.write(rgba.tobytes())
+                self.update()
+            except Exception as e:
+                print(f"[View3D] atlas refresh error: {type(e).__name__}: {e}")
+
     def _upload_mesh(self, data: np.ndarray) -> None:
-        """Upload a float32 (N, 9) vertex array to the GPU.
+        """Upload a float32 (N, 8) vertex array to the GPU.
+        Columns: x y z  nx ny nz  u v
         Must only be called from initializeGL or paintGL (Qt GL callbacks).
         """
         if self.ctx is None or self.prog is None:
             return
 
-        self._free_buffers()
+        # Only release VAO/VBO, not the texture
+        if self._vao is not None:
+            self._vao.release()
+            self._vao = None
+        if self._vbo is not None:
+            self._vbo.release()
+            self._vbo = None
 
         if len(data) == 0:
             self._vertex_count = 0
@@ -369,7 +458,7 @@ class View3D(QOpenGLWidget):
             self._vbo = self.ctx.buffer(data.tobytes())
             self._vao = self.ctx.vertex_array(
                 self.prog,
-                [(self._vbo, '3f 3f 3f', 'in_position', 'in_normal', 'in_color')],
+                [(self._vbo, '3f 3f 2f', 'in_position', 'in_normal', 'in_uv')],
             )
             self._vertex_count = len(data)
             self._hint.hide()
@@ -383,6 +472,9 @@ class View3D(QOpenGLWidget):
         if self._vbo is not None:
             self._vbo.release()
             self._vbo = None
+        if self._texture is not None:
+            self._texture.release()
+            self._texture = None
 
     def __del__(self):
         try:
