@@ -101,9 +101,8 @@ class View3D(QOpenGLWidget):
         self._keys_held: set[Qt.Key] = set()
         self._move_speed = _cfg.move_speed()
         self._velocity = glm.vec3(0.0, 0.0, 0.0)  # for smooth damped movement
-        # Key bindings loaded from settings
+        # Key bindings — populated after _hint is created below
         self._fly_keys: dict[str, Qt.Key] = {}
-        self._reload_fly_keys()
 
         # ── Tick timer (fly movement) ──
         self._timer = QTimer(self)
@@ -112,16 +111,14 @@ class View3D(QOpenGLWidget):
         self._timer.start()
 
         # ── Hint overlay label (shown before any schematic is loaded) ──
-        self._hint = QLabel(
-            "Open a schematic, then click here to move the camera.\n"
-            "Right-drag: look  |  WASD: fly  |  Q/E: up/down  |  Scroll: zoom  |  Ctrl+Scroll: speed  |  R: reset view",
-            self,
-        )
+        self._hint = QLabel("", self)   # text set by _reload_fly_keys() below
         self._hint.setStyleSheet(
             "color: white; background: rgba(0,0,0,160); padding: 6px; font-size: 11px;"
         )
         self._hint.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self._hint.adjustSize()
+
+        # Load key bindings from settings now that _hint exists
+        self._reload_fly_keys()
 
         # Refresh atlas slots when background texture downloads complete
         _tex._manager.batch_ready.connect(self._on_textures_ready)
