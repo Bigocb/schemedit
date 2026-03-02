@@ -15,9 +15,9 @@ import numpy as np
 import moderngl
 import glm
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtWidgets import QLabel, QMenu, QAction, QDialog
+from PyQt6.QtWidgets import QLabel, QMenu, QDialog
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QWheelEvent, QMouseEvent, QKeyEvent, QSurfaceFormat, QCursor
+from PyQt6.QtGui import QWheelEvent, QMouseEvent, QKeyEvent, QSurfaceFormat, QCursor, QAction
 from core.schematic import LitematicSchematic
 from core.mesh_builder import build_mesh
 from core.atlas_builder import Atlas
