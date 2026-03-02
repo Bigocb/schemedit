@@ -240,18 +240,30 @@ class View3D(QOpenGLWidget):
         z = math.cos(pitch_r) * math.sin(yaw_r)
         return glm.normalize(glm.vec3(x, y, z))
 
-    def _right(self) -> glm.vec3:
-        return glm.normalize(glm.cross(self._forward(), glm.vec3(0, 1, 0)))
-
     def _forward_horizontal(self) -> glm.vec3:
         """Forward direction projected onto the XZ plane — WASD stays horizontal
         regardless of camera pitch (like Minecraft creative flight)."""
         yaw_r = math.radians(self._yaw)
         return glm.normalize(glm.vec3(math.cos(yaw_r), 0.0, math.sin(yaw_r)))
 
+    def _right_from_yaw(self) -> glm.vec3:
+        """Right vector derived from yaw only — stable at all pitch values."""
+        fwd_h = self._forward_horizontal()
+        return glm.normalize(glm.cross(fwd_h, glm.vec3(0.0, 1.0, 0.0)))
+
+    def _right(self) -> glm.vec3:
+        return self._right_from_yaw()
+
     def _view_matrix(self) -> glm.mat4:
-        fwd = self._forward()
-        return glm.lookAt(self._cam_pos, self._cam_pos + fwd, glm.vec3(0, 1, 0))
+        """
+        Build the view matrix.  The camera-up vector is derived from yaw only
+        (cross of yaw-right × forward) so lookAt stays well-defined even when
+        forward ≈ ±world-Y (i.e. looking straight up or straight down).
+        """
+        fwd   = self._forward()
+        right = self._right_from_yaw()
+        up    = glm.normalize(glm.cross(right, fwd))
+        return glm.lookAt(self._cam_pos, self._cam_pos + fwd, up)
 
     def _reset_camera(self) -> None:
         """Return camera to the initial overview position (R key)."""
@@ -316,7 +328,8 @@ class View3D(QOpenGLWidget):
             sensitivity = 0.2
             self._yaw   += dx * sensitivity
             self._pitch -= dy * sensitivity
-            self._pitch = max(-89.0, min(89.0, self._pitch))
+            # No pitch clamp — full 360° vertical look is supported because
+            # _view_matrix derives "up" from yaw rather than world-Y.
             self.update()
         super().mouseMoveEvent(event)
 
