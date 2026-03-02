@@ -211,6 +211,12 @@ class LayerView(QWidget):
         self._tex_timer.timeout.connect(self._do_texture_refresh)
         _tex._manager.batch_ready.connect(self._on_batch_ready)
 
+        # ── Status overlay (temporary messages that suppress hover text) ──
+        self._status_active = False
+        self._status_clear_timer = QTimer(self)
+        self._status_clear_timer.setSingleShot(True)
+        self._status_clear_timer.timeout.connect(self._clear_status)
+
         self._placeholder()
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -375,7 +381,21 @@ class LayerView(QWidget):
         except Exception:
             return None
 
+    def _show_status(self, msg: str, ms: int = 4000) -> None:
+        """Display a temporary status message in the hover label."""
+        self._status_active = True
+        self._hover_label.setText(msg)
+        self._hover_label.setStyleSheet("color: #4a9eff; font-size: 10px;")
+        self._status_clear_timer.start(ms)
+
+    def _clear_status(self) -> None:
+        self._status_active = False
+        self._hover_label.setStyleSheet("color: gray; font-size: 10px;")
+        self._hover_label.setText("Hover over the grid to inspect blocks")
+
     def _on_hover(self, px: int, pz: int) -> None:
+        if self._status_active:
+            return   # don't overwrite the status message while it's showing
         result = self._resolve_block(px, pz)
         if result:
             block, x, y, z = result
@@ -447,12 +467,15 @@ class LayerView(QWidget):
             if not _tex.has_texture(block.id):
                 menu.addSeparator()
                 _bid = block.id
+                _disp = display
                 dl_act = QAction(f"⬇  Download texture for '{display}'", self)
                 dl_act.setToolTip(
-                    "Try to fetch the block texture from the Minecraft assets repo.\n"
-                    "The layer will refresh automatically when the download finishes."
+                    "Fetch the block texture from the Minecraft assets repo.\n"
+                    "The layer refreshes automatically when the download finishes."
                 )
-                dl_act.triggered.connect(lambda checked=False, b=_bid: _tex.force_prefetch(b))
+                dl_act.triggered.connect(
+                    lambda checked=False, b=_bid, d=_disp: self._download_texture(b, d)
+                )
                 menu.addAction(dl_act)
 
                 dl_all_act = QAction("⬇  Download all missing textures in schematic", self)
@@ -460,6 +483,11 @@ class LayerView(QWidget):
                 menu.addAction(dl_all_act)
 
         menu.exec(QCursor.pos())
+
+    def _download_texture(self, block_id: str, display: str) -> None:
+        """Trigger a (re-)download for a single block's texture and show feedback."""
+        _tex.force_prefetch(block_id)
+        self._show_status(f"⬇ Downloading texture for '{display}'…  (layer updates when done)")
 
     def _download_all_missing(self) -> None:
         """Force-prefetch every block in the schematic that has no texture on disk."""
@@ -473,8 +501,15 @@ class LayerView(QWidget):
                         bid = ri.region[x, y, z].id
                         if bid not in _AIR_IDS and not _tex.has_texture(bid):
                             missing.add(bid)
+        if not missing:
+            self._show_status("✓ All textures already downloaded", ms=2500)
+            return
         for bid in missing:
             _tex.force_prefetch(bid)
+        self._show_status(
+            f"⬇ Downloading {len(missing)} missing texture(s)…  (layer updates when done)",
+            ms=5000,
+        )
 
     def _prompt_set_block(self, x: int, y: int, z: int) -> None:
         """Show a block-chooser dialog with autocomplete and emit set_block_at."""
