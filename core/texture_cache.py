@@ -415,6 +415,34 @@ def get_pixmap(block_id: str, size: int = 16) -> QPixmap | None:
     return None
 
 
+def has_texture(block_id: str) -> bool:
+    """Return True if a texture PNG for this block is already on disk."""
+    if block_id in _AIR_IDS:
+        return False
+    stem = _texture_stem(block_id)
+    return (_CACHE_DIR / f"{stem}.png").exists()
+
+
+def force_prefetch(block_id: str) -> None:
+    """
+    Re-attempt a texture download even if a previous attempt failed (404 etc.).
+    Clears the block from the failed / in-flight sets so the download runs again.
+    Also invalidates any cached None entry so the next get_pixmap() call will
+    pick up the freshly downloaded file.
+    """
+    if block_id in _AIR_IDS:
+        return
+    _failed.discard(block_id)
+    _downloading.discard(block_id)
+    # Remove cached None so get_pixmap() re-checks after download completes
+    for key in [k for k in _pixmap_cache if k.startswith(f"{block_id}@")]:
+        del _pixmap_cache[key]
+    stem  = _texture_stem(block_id)
+    local = _CACHE_DIR / f"{stem}.png"
+    if not local.exists():
+        _schedule_download(block_id, stem)
+
+
 def prefetch(block_ids: list[str]) -> None:
     """
     Pre-download textures for a collection of block IDs (background, no-op if

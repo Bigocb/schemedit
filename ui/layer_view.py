@@ -443,7 +443,38 @@ class LayerView(QWidget):
             delete_act.triggered.connect(lambda: self.delete_requested.emit(block.id, props))
             menu.addAction(delete_act)
 
+            # ── Texture download (shown only when texture is missing) ──────────
+            if not _tex.has_texture(block.id):
+                menu.addSeparator()
+                _bid = block.id
+                dl_act = QAction(f"⬇  Download texture for '{display}'", self)
+                dl_act.setToolTip(
+                    "Try to fetch the block texture from the Minecraft assets repo.\n"
+                    "The layer will refresh automatically when the download finishes."
+                )
+                dl_act.triggered.connect(lambda checked=False, b=_bid: _tex.force_prefetch(b))
+                menu.addAction(dl_act)
+
+                dl_all_act = QAction("⬇  Download all missing textures in schematic", self)
+                dl_all_act.triggered.connect(self._download_all_missing)
+                menu.addAction(dl_all_act)
+
         menu.exec(QCursor.pos())
+
+    def _download_all_missing(self) -> None:
+        """Force-prefetch every block in the schematic that has no texture on disk."""
+        if not self._schematic:
+            return
+        missing: set[str] = set()
+        for ri in self._schematic.regions:
+            for x in ri.region.xrange():
+                for y in ri.region.yrange():
+                    for z in ri.region.zrange():
+                        bid = ri.region[x, y, z].id
+                        if bid not in _AIR_IDS and not _tex.has_texture(bid):
+                            missing.add(bid)
+        for bid in missing:
+            _tex.force_prefetch(bid)
 
     def _prompt_set_block(self, x: int, y: int, z: int) -> None:
         """Show a block-chooser dialog with autocomplete and emit set_block_at."""
