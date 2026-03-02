@@ -376,7 +376,8 @@ _FALLBACK_STEM: dict[str, str] = {
 
 class _DownloadManager(QObject):
     """Signals emitted from worker threads — delivered to main thread by Qt."""
-    batch_ready = pyqtSignal()   # fired when ≥1 new textures have landed
+    batch_ready  = pyqtSignal()    # fired on every download attempt (success or fail)
+    batch_failed = pyqtSignal(str) # arg = block_id that had no texture in the repo
 
 
 _manager = _DownloadManager()
@@ -493,11 +494,11 @@ def _stem_download_worker(stem: str) -> None:
         local = _CACHE_DIR / f"{stem}.png"
         url   = f"{_REPO_BASE}/{stem}.png"
         urllib.request.urlretrieve(url, str(local))
-        _manager.batch_ready.emit()
     except Exception:
         _stems_failed.add(stem)
     finally:
         _stems_downloading.discard(stem)
+        _manager.batch_ready.emit()  # always notify (success or fail)
 
 
 # ── Internals ─────────────────────────────────────────────────────────────────
@@ -544,13 +545,20 @@ def _schedule_download(block_id: str, stem: str) -> None:
 
 def _download_worker(block_id: str, stem: str) -> None:
     """Runs in a background daemon thread."""
+    success = False
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         local = _CACHE_DIR / f"{stem}.png"
         url   = f"{_REPO_BASE}/{stem}.png"
         urllib.request.urlretrieve(url, str(local))
-        _manager.batch_ready.emit()   # Qt queues this to the main thread
+        success = True
     except Exception:
         _failed.add(block_id)
     finally:
         _downloading.discard(block_id)
+        # Always notify so the layer refreshes; on failure also fire batch_failed
+        # so the UI can show an error.  batch_ready even on failure lets the view
+        # re-render and confirm the texture is still missing.
+        _manager.batch_ready.emit()
+        if not success:
+            _manager.batch_failed.emit(block_id)

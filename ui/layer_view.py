@@ -210,6 +210,7 @@ class LayerView(QWidget):
         self._tex_timer.setInterval(120)   # ms — wait for burst to settle
         self._tex_timer.timeout.connect(self._do_texture_refresh)
         _tex._manager.batch_ready.connect(self._on_batch_ready)
+        _tex._manager.batch_failed.connect(self._on_download_failed)
 
         # ── Status overlay (temporary messages that suppress hover text) ──
         self._status_active = False
@@ -260,6 +261,15 @@ class LayerView(QWidget):
     def _on_batch_ready(self) -> None:
         """Restart the debounce timer each time a texture download batch fires."""
         self._tex_timer.start()
+
+    def _on_download_failed(self, block_id: str) -> None:
+        """Called when a background download 404'd — show error if user triggered it."""
+        if self._status_active:
+            display = block_id.replace("minecraft:", "")
+            self._show_status(
+                f"⚠ No texture found for '{display}' in Minecraft assets",
+                ms=4000,
+            )
 
     def _do_texture_refresh(self) -> None:
         """Repaint after the download burst has settled."""

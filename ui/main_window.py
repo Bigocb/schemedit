@@ -106,6 +106,11 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._layer_view, "Layer View")
 
         self._view3d = View3D()
+        self._view3d.block_clicked.connect(self._on_layer_block_clicked)
+        self._view3d.replace_requested.connect(self._open_find_replace_for)
+        self._view3d.delete_requested.connect(self._delete_block)
+        self._view3d.delete_at_requested.connect(self._delete_block_at)
+        self._view3d.set_block_at.connect(self._set_block_at)
         self._tabs.addTab(self._view3d, "3D View")
 
         self._tabs.setMinimumWidth(380)
