@@ -6,6 +6,9 @@ on:
       - "v*.*.*"        # trigger on version tags: v1.0.0, v1.2.3, etc.
   workflow_dispatch:    # also allow manual runs from the Actions tab
 
+permissions:
+  contents: write   # needed to create GitHub Releases
+
 jobs:
   build:
     strategy:

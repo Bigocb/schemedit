@@ -9,18 +9,24 @@ URL pattern:
     assets/minecraft/textures/block/<name>.png
 """
 from __future__ import annotations
+import json as _json
 import threading
 import urllib.request
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
 from PyQt6.QtGui import QPixmap, QImage
 
-_BRANCH    = "1.21.11"
-_REPO_BASE = (
+_BRANCH     = "1.21.11"
+_REPO_BASE  = (
     "https://raw.githubusercontent.com/InventivetalentDev/"
     f"minecraft-assets/{_BRANCH}/assets/minecraft/textures/block"
 )
-_CACHE_DIR = Path.home() / ".cache" / "schemedit" / "textures"
+_MODEL_BASE = (
+    "https://raw.githubusercontent.com/InventivetalentDev/"
+    f"minecraft-assets/{_BRANCH}/assets/minecraft/models/block"
+)
+_CACHE_DIR       = Path.home() / ".cache" / "schemedit" / "textures"
+_MODEL_CACHE_DIR = Path.home() / ".cache" / "schemedit" / "models"
 
 # Blocks that need a specific top-face texture (not just <block_name>.png)
 _TOP_OVERRIDES: dict[str, str] = {
@@ -430,6 +436,9 @@ _pixmap_cache: dict[str, QPixmap | None] = {}   # "<block_id>@<size>" → pixmap
 _downloading:  set[str] = set()                  # block IDs in flight
 _failed:       set[str] = set()                  # block IDs with no texture file
 
+# Stems resolved at runtime via block model JSON (populated from bg threads)
+_model_stems:  dict[str, str] = {}              # bare block name → resolved stem
+
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -550,14 +559,17 @@ def _texture_stem(block_id: str) -> str:
 
     Resolution order:
       1. _TOP_OVERRIDES  — explicit top-face overrides (grass_block_top, etc.)
-      2. exact name      — most blocks just use their own name
-      3. _FALLBACK_STEM  — variant blocks (stairs, slabs, walls, …) → base material
+      2. _FALLBACK_STEM  — hand-curated map for variants (stairs, slabs, fences…)
+      3. _model_stems    — resolved at runtime via block model JSON (see below)
+      4. exact name      — most blocks just use their own name
     """
     name = block_id.removeprefix("minecraft:")
     if name in _TOP_OVERRIDES:
         return _TOP_OVERRIDES[name]
     if name in _FALLBACK_STEM:
         return _FALLBACK_STEM[name]
+    if name in _model_stems:
+        return _model_stems[name]
     return name
 
 
@@ -595,12 +607,112 @@ def _download_worker(block_id: str, stem: str) -> None:
         urllib.request.urlretrieve(url, str(local))
         success = True
     except Exception:
-        _failed.add(block_id)
+        # Direct PNG 404 — try resolving via block model JSON before giving up.
+        name     = block_id.removeprefix("minecraft:")
+        resolved = _resolve_stem_via_model(name)
+        if resolved and resolved != stem:
+            _model_stems[name] = resolved          # cache for future _texture_stem() calls
+            resolved_local = _CACHE_DIR / f"{resolved}.png"
+            if resolved_local.exists():
+                success = True                     # already have it from another block
+            else:
+                try:
+                    urllib.request.urlretrieve(
+                        f"{_REPO_BASE}/{resolved}.png", str(resolved_local)
+                    )
+                    success = True
+                except Exception:
+                    pass
+        if not success:
+            _failed.add(block_id)
     finally:
         _downloading.discard(block_id)
         # Always notify so the layer refreshes; on failure also fire batch_failed
-        # so the UI can show an error.  batch_ready even on failure lets the view
-        # re-render and confirm the texture is still missing.
+        # so the UI can show an error.
         _manager.batch_ready.emit()
         if not success:
             _manager.batch_failed.emit(block_id)
+
+
+def _resolve_stem_via_model(name: str) -> str | None:
+    """
+    Fetch the block model JSON for `name` from the InventivetalentDev repo and
+    walk the parent chain until a concrete texture path is found.
+
+    Model JSONs live at:
+      assets/minecraft/models/block/{name}.json
+
+    They look like:
+      { "parent": "block/fence_post",
+        "textures": { "texture": "minecraft:block/oak_planks" } }
+
+    Texture values can be:
+      - direct paths:  "minecraft:block/oak_planks"  → stem "oak_planks"
+      - #references:   "#texture"                    → resolve key in same dict
+
+    Runs in a background thread; blocks while fetching JSONs.
+    Returns the resolved PNG stem (no .png), or None on failure.
+    """
+    _MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    visited:              set[str]         = set()
+    accumulated_textures: dict[str, str]   = {}
+    current = name
+
+    while current and current not in visited and len(visited) < 10:
+        visited.add(current)
+
+        local = _MODEL_CACHE_DIR / f"{current}.json"
+        if not local.exists():
+            try:
+                urllib.request.urlretrieve(f"{_MODEL_BASE}/{current}.json", str(local))
+            except Exception:
+                # Write empty sentinel so we don't re-fetch on next call
+                try:
+                    local.write_text("{}", encoding="utf-8")
+                except Exception:
+                    pass
+                break
+
+        try:
+            data = _json.loads(local.read_text(encoding="utf-8"))
+        except Exception:
+            break
+
+        if not data:          # empty sentinel → model not found
+            break
+
+        # Collect textures; child keys win over parent (don't overwrite)
+        for k, v in data.get("textures", {}).items():
+            accumulated_textures.setdefault(k, v)
+
+        parent = data.get("parent", "")
+        if not parent:
+            break
+        # "minecraft:block/fence_post" or "block/cube_all" → "fence_post"
+        current = parent.rstrip("/").rsplit("/", 1)[-1]
+
+    if not accumulated_textures:
+        return None
+
+    # Resolve #reference chains within the accumulated texture dict
+    def _deref(val: str, depth: int = 0) -> str:
+        if depth > 10 or not val.startswith("#"):
+            return val
+        return _deref(accumulated_textures.get(val[1:], val), depth + 1)
+
+    resolved = {k: _deref(v) for k, v in accumulated_textures.items()}
+
+    # Pick the best face for a top-down 2-D view: prefer top, then all, etc.
+    for key in ("top", "all", "texture", "side", "cross", "particle", "end"):
+        val = resolved.get(key, "")
+        if val and not val.startswith("#"):
+            # "minecraft:block/oak_planks" → "oak_planks"
+            return val.rstrip("/").rsplit("/", 1)[-1]
+
+    # Fallback: first direct (non-reference) value in the dict
+    for val in resolved.values():
+        if val and not val.startswith("#"):
+            return val.rstrip("/").rsplit("/", 1)[-1]
+
+    return None
