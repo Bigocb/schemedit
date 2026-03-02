@@ -321,13 +321,13 @@ class View3D(QOpenGLWidget):
         raw = _cfg.get_fly_keys()
         self._fly_keys = {}
         for action, key_str in raw.items():
-            try:
-                # QKeySequence("W").toString() == "W"; reverse: parse from string
-                seq = QKeySequence.fromString(key_str)
-                if not seq.isEmpty():
-                    self._fly_keys[action] = Qt.Key(seq[0].key())
-            except Exception:
-                pass
+            # Try exact name first (e.g. "W" → Key_W, "Space" → Key_Space)
+            qt_key = getattr(Qt.Key, f"Key_{key_str}", None)
+            # Fallback: try uppercase (handles lowercase stored values)
+            if qt_key is None:
+                qt_key = getattr(Qt.Key, f"Key_{key_str.upper()}", None)
+            if qt_key is not None:
+                self._fly_keys[action] = qt_key
         # Update hint text to show current bindings
         fk = raw
         self._hint.setText(

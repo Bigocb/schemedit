@@ -40,6 +40,15 @@ _SIDE_OVERRIDES: dict[str, str] = {
     "dirt_path":                "dirt_path_side",
     "farmland":                 "dirt",
     "farmland_moist":           "dirt",
+    # Pillar / column blocks — side face differs from top
+    "quartz_block":             "quartz_block_side",
+    "quartz_pillar":            "quartz_pillar",
+    "purpur_block":             "purpur_block_side",
+    "purpur_pillar":            "purpur_pillar",
+    "hay_block":                "hay_block_side",
+    "bone_block":               "bone_block_side",
+    "basalt":                   "basalt_side",
+    "polished_basalt":          "polished_basalt_side",
     # Logs: side is the log texture itself (no _top suffix)
     "oak_log":                  "oak_log",
     "birch_log":                "birch_log",
@@ -242,6 +251,7 @@ class Atlas:
         self._rgba[y0:y0 + TILE, x0:x0 + TILE] = tile
 
     def _fill_all(self) -> None:
+        missing_stems: list[str] = []
         for stem, slot in self._stem_slots.items():
             tile = _load_tile(stem)
             if tile is not None:
@@ -250,4 +260,9 @@ class Atlas:
                 # Find a representative block_id for this stem's fallback colour
                 # (just use the stem name prefixed with 'minecraft:')
                 tile = _color_tile(f"minecraft:{stem}")
+                missing_stems.append(stem)
             self._write_slot(slot, tile)
+        # Schedule background downloads for any atlas stems not yet on disk.
+        # This covers side/bottom face textures that block-level prefetch misses.
+        if missing_stems:
+            _tex.prefetch_stems(missing_stems)

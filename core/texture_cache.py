@@ -55,6 +55,16 @@ _TOP_OVERRIDES: dict[str, str] = {
     "stripped_mangrove_log":    "stripped_mangrove_log_top",
     "stripped_cherry_log":      "stripped_cherry_log_top",
     "stripped_pale_oak_log":    "stripped_pale_oak_log_top",
+    # Pillar / column blocks — top face differs from side
+    "quartz_block":             "quartz_block_top",
+    "chiseled_quartz_block":    "chiseled_quartz_block",
+    "quartz_pillar":            "quartz_pillar_top",
+    "purpur_block":             "purpur_block_top",
+    "purpur_pillar":            "purpur_pillar_top",
+    "hay_block":                "hay_block_top",
+    "bone_block":               "bone_block_top",
+    "basalt":                   "basalt_top",
+    "polished_basalt":          "polished_basalt_top",
     # Wood blocks (all-sided) — use the side log texture for the top
     "oak_wood":                 "oak_log",
     "birch_wood":               "birch_log",
@@ -317,6 +327,24 @@ _FALLBACK_STEM: dict[str, str] = {
     "composter":         "composter_top",
     "lectern":           "lectern_top",
     "glass_pane":        "glass",
+    "tinted_glass":      "tinted_glass",
+    # Stained glass panes → base stained glass texture
+    "white_stained_glass_pane":      "white_stained_glass",
+    "orange_stained_glass_pane":     "orange_stained_glass",
+    "magenta_stained_glass_pane":    "magenta_stained_glass",
+    "light_blue_stained_glass_pane": "light_blue_stained_glass",
+    "yellow_stained_glass_pane":     "yellow_stained_glass",
+    "lime_stained_glass_pane":       "lime_stained_glass",
+    "pink_stained_glass_pane":       "pink_stained_glass",
+    "gray_stained_glass_pane":       "gray_stained_glass",
+    "light_gray_stained_glass_pane": "light_gray_stained_glass",
+    "cyan_stained_glass_pane":       "cyan_stained_glass",
+    "purple_stained_glass_pane":     "purple_stained_glass",
+    "blue_stained_glass_pane":       "blue_stained_glass",
+    "brown_stained_glass_pane":      "brown_stained_glass",
+    "green_stained_glass_pane":      "green_stained_glass",
+    "red_stained_glass_pane":        "red_stained_glass",
+    "black_stained_glass_pane":      "black_stained_glass",
     "iron_bars":         "iron_bars",
     "chain":             "chain",
     "lantern":           "lantern",
@@ -400,6 +428,48 @@ def prefetch(block_ids: list[str]) -> None:
         local = _CACHE_DIR / f"{stem}.png"
         if not local.exists():
             _schedule_download(bid, stem)
+
+
+# ── Stem-level prefetch (used by atlas_builder for side/bottom faces) ──────────
+
+_stems_downloading: set[str] = set()
+_stems_failed:      set[str] = set()
+
+
+def prefetch_stems(stems: list[str]) -> None:
+    """
+    Download specific texture stems that are not covered by block-level prefetch.
+    The atlas needs side and bottom face textures (e.g. 'grass_block_side') which
+    don't map 1-to-1 to a block ID, so we request them by stem directly.
+    Background; no-op if already on disk or already in flight.
+    """
+    for stem in stems:
+        if stem in _stems_downloading or stem in _stems_failed:
+            continue
+        local = _CACHE_DIR / f"{stem}.png"
+        if local.exists():
+            continue
+        _stems_downloading.add(stem)
+        t = threading.Thread(
+            target=_stem_download_worker,
+            args=(stem,),
+            daemon=True,
+        )
+        t.start()
+
+
+def _stem_download_worker(stem: str) -> None:
+    """Runs in a background daemon thread — downloads a texture by stem name."""
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        local = _CACHE_DIR / f"{stem}.png"
+        url   = f"{_REPO_BASE}/{stem}.png"
+        urllib.request.urlretrieve(url, str(local))
+        _manager.batch_ready.emit()
+    except Exception:
+        _stems_failed.add(stem)
+    finally:
+        _stems_downloading.discard(stem)
 
 
 # ── Internals ─────────────────────────────────────────────────────────────────
