@@ -248,7 +248,9 @@ class Atlas:
         row = slot // COLS
         x0  = col * TILE
         y0  = row * TILE
-        self._rgba[y0:y0 + TILE, x0:x0 + TILE] = tile
+        # OpenGL's v=0 is the bottom of the image, but QImage row 0 is the top.
+        # Flip each tile vertically so the texture appears right-side up in 3D.
+        self._rgba[y0:y0 + TILE, x0:x0 + TILE] = tile[::-1]
 
     def _fill_all(self) -> None:
         missing_stems: list[str] = []
