@@ -7,11 +7,14 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap, QImage, QPainter, QWheelEvent, QMouseEvent, QCursor, QAction
+from PyQt6.QtCore import QTimer
 from core.schematic import LitematicSchematic, RegionInfo
 from core.block_colors import block_qcolor as _block_color, AIR_IDS as _AIR_IDS
+from core import texture_cache as _tex
 
-# Pixels per block cell at 1× zoom
-CELL_SIZE = 12
+# Pixels per block cell at 1× zoom.
+# 16 matches the native Minecraft texture resolution so textures render crisp.
+CELL_SIZE = 16
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -138,6 +141,14 @@ class LayerView(QWidget):
         layout.addWidget(self._hover_label)
 
         self._pixmap_item: QGraphicsPixmapItem | None = None
+
+        # ── Texture refresh (debounced so many parallel downloads fire one repaint) ──
+        self._tex_timer = QTimer(self)
+        self._tex_timer.setSingleShot(True)
+        self._tex_timer.setInterval(120)   # ms — wait for burst to settle
+        self._tex_timer.timeout.connect(self._do_texture_refresh)
+        _tex._manager.batch_ready.connect(self._on_batch_ready)
+
         self._placeholder()
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -147,6 +158,8 @@ class LayerView(QWidget):
         self._pixmap_cache.clear()
         self._compute_y_range()
         self._render_current()
+        # Kick off background texture downloads for every unique block type
+        self._prefetch_textures()
 
     def refresh(self) -> None:
         """Call after block edits to invalidate cache and redraw."""
@@ -159,6 +172,31 @@ class LayerView(QWidget):
         self._scene.clear()
         self._pixmap_item = None
         self._placeholder()
+
+    # ── Internal ───────────────────────────────────────────────────────────────
+
+    # ── Texture helpers ─────────────────────────────────────────────────────────
+
+    def _prefetch_textures(self) -> None:
+        """Collect unique block IDs in this schematic and pre-download textures."""
+        if not self._schematic:
+            return
+        seen: set[str] = set()
+        for ri in self._schematic.regions:
+            for x in ri.region.xrange():
+                for y in ri.region.yrange():
+                    for z in ri.region.zrange():
+                        seen.add(ri.region[x, y, z].id)
+        _tex.prefetch(list(seen))
+
+    def _on_batch_ready(self) -> None:
+        """Restart the debounce timer each time a texture download batch fires."""
+        self._tex_timer.start()
+
+    def _do_texture_refresh(self) -> None:
+        """Repaint after the download burst has settled."""
+        self._pixmap_cache.clear()
+        self._render_current()
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
@@ -233,13 +271,21 @@ class LayerView(QWidget):
         for xi, x in enumerate(xs):
             for zi, z in enumerate(zs):
                 block = ri.region[x, y, z]
-                color = _block_color(block.id)
-                if color.alpha() == 0:
-                    continue  # leave air as background
-                painter.setBrush(color)
+                if block.id in _AIR_IDS:
+                    continue  # leave air as dark background
                 px = xi * CELL_SIZE
                 pz = zi * CELL_SIZE
-                painter.drawRect(px, pz, CELL_SIZE - 1, CELL_SIZE - 1)
+                tex = _tex.get_pixmap(block.id, CELL_SIZE)
+                if tex is not None:
+                    # Real Minecraft texture — draw pixel-art tile
+                    painter.drawPixmap(px, pz, tex)
+                else:
+                    # Texture not yet downloaded — fall back to solid colour
+                    color = _block_color(block.id)
+                    if color.alpha() == 0:
+                        continue
+                    painter.setBrush(color)
+                    painter.drawRect(px, pz, CELL_SIZE - 1, CELL_SIZE - 1)
 
         painter.end()
 
