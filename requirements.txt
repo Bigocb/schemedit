@@ -2,3 +2,4 @@ litemapy
 PyQt6
 moderngl
 PyGLM
+numpy

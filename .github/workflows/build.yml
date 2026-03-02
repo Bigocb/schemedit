@@ -1,0 +1,75 @@
+name: Build Binaries
+
+on:
+  push:
+    tags:
+      - "v*.*.*"        # trigger on version tags: v1.0.0, v1.2.3, etc.
+  workflow_dispatch:    # also allow manual runs from the Actions tab
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: Schemedit-windows.exe
+            dist_path: dist/Schemedit.exe
+
+          - os: macos-latest
+            artifact: Schemedit-macos
+            dist_path: dist/Schemedit
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # ── Checkout ─────────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── Python ───────────────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── Dependencies ─────────────────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      # macOS needs a newer version of PyInstaller that handles .app bundles well
+      - name: Upgrade PyInstaller on macOS
+        if: runner.os == 'macOS'
+        run: pip install --upgrade pyinstaller
+
+      # ── Build ─────────────────────────────────────────────────────────────────
+      - name: Build with PyInstaller
+        run: pyinstaller schemedit.spec
+
+      # ── Rename artifact to platform-specific name ─────────────────────────────
+      - name: Rename Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Move-Item dist\Schemedit.exe dist\Schemedit-windows.exe
+
+      - name: Rename macOS artifact
+        if: runner.os == 'macOS'
+        run: mv dist/Schemedit dist/Schemedit-macos
+
+      # ── Upload artifact (available in the Actions UI for every build) ─────────
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+      # ── Publish to GitHub Release (only on version-tag push) ──────────────────
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.artifact }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
