@@ -3,18 +3,73 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QSpinBox, QSlider, QGraphicsView, QGraphicsScene,
     QGraphicsPixmapItem, QSizePolicy, QMenu,
-    QCheckBox, QLineEdit, QInputDialog
+    QCheckBox, QLineEdit, QInputDialog,
+    QDialog, QDialogButtonBox, QCompleter,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QStringListModel
 from PyQt6.QtGui import QColor, QPixmap, QImage, QPainter, QWheelEvent, QMouseEvent, QCursor, QAction
 from PyQt6.QtCore import QTimer
 from core.schematic import LitematicSchematic, RegionInfo
 from core.block_colors import block_qcolor as _block_color, AIR_IDS as _AIR_IDS
 from core import texture_cache as _tex
+from core.block_list import ALL_BLOCK_IDS
 
 # Pixels per block cell at 1× zoom.
 # 16 matches the native Minecraft texture resolution so textures render crisp.
 CELL_SIZE = 16
+
+# Build a shared sorted string list for autocomplete
+_BLOCK_ID_LIST: list[str] = sorted(ALL_BLOCK_IDS)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block chooser dialog with autocomplete
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _BlockChooserDialog(QDialog):
+    """Single-field dialog with autocomplete from the known block ID list."""
+
+    def __init__(self, title: str, prompt: str, default: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(380)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(prompt))
+
+        self._edit = QLineEdit(default)
+        self._edit.setPlaceholderText("e.g. minecraft:stone  (namespace optional)")
+        layout.addWidget(self._edit)
+
+        # Autocomplete
+        model = QStringListModel(_BLOCK_ID_LIST, self)
+        completer = QCompleter(model, self)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self._edit.setCompleter(completer)
+
+        hint = QLabel("<span style='color:gray;font-size:10px;'>"
+                      "Start typing a block name — autocomplete shows matches.  "
+                      "Namespace (minecraft:) is added automatically if omitted.</span>")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._edit.returnPressed.connect(self.accept)
+
+    def block_id(self) -> str:
+        text = self._edit.text().strip()
+        if text and ':' not in text:
+            text = 'minecraft:' + text
+        return text
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -122,6 +177,13 @@ class LayerView(QWidget):
         self._paint_block_edit = QLineEdit("minecraft:stone")
         self._paint_block_edit.setFixedWidth(220)
         self._paint_block_edit.setPlaceholderText("e.g. minecraft:stone  (namespace optional)")
+        # Autocomplete for paint block input
+        _model = QStringListModel(_BLOCK_ID_LIST, self)
+        _completer = QCompleter(_model, self)
+        _completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        _completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        _completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self._paint_block_edit.setCompleter(_completer)
         paint_row.addWidget(self._paint_block_edit)
         paint_row.addStretch()
         layout.addLayout(paint_row)
@@ -384,16 +446,17 @@ class LayerView(QWidget):
         menu.exec(QCursor.pos())
 
     def _prompt_set_block(self, x: int, y: int, z: int) -> None:
-        """Show an input dialog and emit set_block_at with the chosen block ID."""
+        """Show a block-chooser dialog with autocomplete and emit set_block_at."""
         default = self._paint_block_edit.text().strip() or "minecraft:stone"
-        block_id, ok = QInputDialog.getText(
-            self, "Place / Replace Block",
-            f"Block ID to place at ({x}, {y}, {z}):",
-            text=default,
+        dlg = _BlockChooserDialog(
+            title="Place / Replace Block",
+            prompt=f"Block ID to place at ({x}, {y}, {z}):",
+            default=default,
+            parent=self,
         )
-        if not ok or not block_id.strip():
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        block_id = block_id.strip()
-        if ':' not in block_id:
-            block_id = 'minecraft:' + block_id
+        block_id = dlg.block_id()
+        if not block_id:
+            return
         self.set_block_at.emit(x, y, z, block_id)

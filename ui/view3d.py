@@ -21,6 +21,7 @@ from core.schematic import LitematicSchematic
 from core.mesh_builder import build_mesh
 from core.atlas_builder import Atlas
 from core import texture_cache as _tex
+from core import settings as _cfg
 
 
 # ── GLSL shaders ──────────────────────────────────────────────────────────────
@@ -98,8 +99,11 @@ class View3D(QOpenGLWidget):
         self._last_mouse_x = 0
         self._last_mouse_y = 0
         self._keys_held: set[Qt.Key] = set()
-        self._move_speed = 10.0   # blocks per second
+        self._move_speed = _cfg.move_speed()
         self._velocity = glm.vec3(0.0, 0.0, 0.0)  # for smooth damped movement
+        # Key bindings loaded from settings
+        self._fly_keys: dict[str, Qt.Key] = {}
+        self._reload_fly_keys()
 
         # ── Tick timer (fly movement) ──
         self._timer = QTimer(self)
@@ -313,6 +317,37 @@ class View3D(QOpenGLWidget):
             self._pitch     = self._cam_start_pitch
             self.update()
 
+    # ── Settings ───────────────────────────────────────────────────────────────
+
+    def _reload_fly_keys(self) -> None:
+        """Load key bindings from settings into self._fly_keys."""
+        raw = _cfg.get_fly_keys()
+        self._fly_keys = {}
+        for action, key_str in raw.items():
+            try:
+                # QKeySequence("W").toString() == "W"; reverse: parse from string
+                seq = QKeySequence.fromString(key_str)
+                if not seq.isEmpty():
+                    self._fly_keys[action] = Qt.Key(seq[0].key())
+            except Exception:
+                pass
+        # Update hint text to show current bindings
+        fk = raw
+        self._hint.setText(
+            "Open a schematic, then click here to move the camera.\n"
+            f"Right-drag: look  |  {fk.get('forward','W')}/{fk.get('backward','S')}: fwd/back  |  "
+            f"{fk.get('left','A')}/{fk.get('right','D')}: strafe  |  "
+            f"{fk.get('up','E')}/{fk.get('down','Q')}: up/down  |  "
+            "Scroll: zoom  |  Ctrl+Scroll: speed  |  "
+            f"{fk.get('reset','R')}: reset view"
+        )
+        self._hint.adjustSize()
+
+    def reload_settings(self) -> None:
+        """Re-read settings (call after settings dialog closes)."""
+        self._reload_fly_keys()
+        self._move_speed = _cfg.move_speed()
+
     # ── Tick (movement) ────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
@@ -321,20 +356,16 @@ class View3D(QOpenGLWidget):
         right = glm.normalize(glm.cross(fwd_h, glm.vec3(0, 1, 0)))
         up    = glm.vec3(0.0, 1.0, 0.0)
 
+        K = self._fly_keys   # shortcut
+
         # Build target velocity from held keys (zero if no keys pressed)
         target = glm.vec3(0.0, 0.0, 0.0)
-        if Qt.Key.Key_W in self._keys_held:
-            target += fwd_h * self._move_speed
-        if Qt.Key.Key_S in self._keys_held:
-            target -= fwd_h * self._move_speed
-        if Qt.Key.Key_A in self._keys_held:
-            target -= right * self._move_speed
-        if Qt.Key.Key_D in self._keys_held:
-            target += right * self._move_speed
-        if Qt.Key.Key_Q in self._keys_held:
-            target -= up * self._move_speed
-        if Qt.Key.Key_E in self._keys_held:
-            target += up * self._move_speed
+        if K.get("forward")  in self._keys_held: target += fwd_h * self._move_speed
+        if K.get("backward") in self._keys_held: target -= fwd_h * self._move_speed
+        if K.get("left")     in self._keys_held: target -= right  * self._move_speed
+        if K.get("right")    in self._keys_held: target += right  * self._move_speed
+        if K.get("down")     in self._keys_held: target -= up     * self._move_speed
+        if K.get("up")       in self._keys_held: target += up     * self._move_speed
 
         # Soft lerp toward target — gives smooth acceleration and deceleration
         self._velocity = glm.mix(self._velocity, target, 0.22)
@@ -365,7 +396,7 @@ class View3D(QOpenGLWidget):
             self._last_mouse_x = event.position().x()
             self._last_mouse_y = event.position().y()
 
-            sensitivity = 0.2
+            sensitivity = _cfg.mouse_sensitivity()
             self._yaw   += dx * sensitivity
             self._pitch -= dy * sensitivity
             # No pitch clamp — full 360° vertical look is supported because
@@ -388,10 +419,11 @@ class View3D(QOpenGLWidget):
             self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_R:
+        pressed = Qt.Key(event.key())
+        if pressed == self._fly_keys.get("reset", Qt.Key.Key_R):
             self._reset_camera()
             return
-        self._keys_held.add(Qt.Key(event.key()))
+        self._keys_held.add(pressed)
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:

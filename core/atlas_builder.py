@@ -24,6 +24,7 @@ from PyQt6.QtGui import QImage
 
 from core.block_colors import block_rgb, AIR_IDS
 from core import texture_cache as _tex
+from core.texture_cache import _FALLBACK_STEM as _TEX_FALLBACK
 
 TILE = 16   # pixels per atlas tile
 COLS = 16   # tiles per atlas row → atlas width = COLS*TILE = 256 px
@@ -80,12 +81,19 @@ _BOTTOM_OVERRIDES: dict[str, str] = {
 
 def _side_stem(block_id: str) -> str:
     name = block_id.removeprefix("minecraft:")
-    return _SIDE_OVERRIDES.get(name, name)
+    if name in _SIDE_OVERRIDES:
+        return _SIDE_OVERRIDES[name]
+    if name in _TEX_FALLBACK:
+        return _TEX_FALLBACK[name]
+    return name
 
 
 def _bottom_stem(block_id: str) -> str:
     name = block_id.removeprefix("minecraft:")
-    return _BOTTOM_OVERRIDES.get(name, _side_stem(block_id))
+    if name in _BOTTOM_OVERRIDES:
+        return _BOTTOM_OVERRIDES[name]
+    # Reuse side stem (handles stairs/slabs/walls automatically)
+    return _side_stem(block_id)
 
 
 def _load_tile(stem: str) -> np.ndarray | None:

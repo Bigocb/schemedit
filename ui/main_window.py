@@ -1,14 +1,16 @@
 from __future__ import annotations
 import os
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog,
-    QMessageBox, QStatusBar, QTabWidget
+    QMessageBox, QStatusBar, QTabWidget, QMenu
 )
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtCore import Qt
 from core.schematic import LitematicSchematic
 from core import block_ops
 from core.block_ops import set_block
+from core import settings as _cfg
 from ui.schematic_panel import SchematicPanel
 from ui.palette_panel import PalettePanel
 from ui.find_replace import FindReplaceDialog
@@ -43,6 +45,11 @@ class MainWindow(QMainWindow):
         open_act.triggered.connect(self._open_file)
         file_menu.addAction(open_act)
 
+        # ── Open Recent submenu ──────────────────────────────────────────────
+        self._recent_menu = QMenu("Open &Recent", self)
+        file_menu.addMenu(self._recent_menu)
+        self._rebuild_recent_menu()
+
         file_menu.addSeparator()
 
         save_act = QAction("&Save", self)
@@ -67,6 +74,13 @@ class MainWindow(QMainWindow):
         find_replace_act.setShortcut(QKeySequence("Ctrl+H"))
         find_replace_act.triggered.connect(self._open_find_replace)
         edit_menu.addAction(find_replace_act)
+
+        # ── Settings menu ────────────────────────────────────────────────────
+        settings_menu = mb.addMenu("&Settings")
+        prefs_act = QAction("&Preferences…", self)
+        prefs_act.setShortcut(QKeySequence("Ctrl+,"))
+        prefs_act.triggered.connect(self._open_settings)
+        settings_menu.addAction(prefs_act)
 
     def _build_central(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -126,8 +140,14 @@ class MainWindow(QMainWindow):
             self._dirty = False
             self._update_title(path)
             self._set_status(f"Loaded: {os.path.basename(path)}")
+            # Track in recent files
+            _cfg.add_recent_file(path)
+            self._rebuild_recent_menu()
         except Exception as e:
             QMessageBox.critical(self, "Error loading file", str(e))
+            # Remove from recent if file no longer accessible
+            _cfg.remove_recent_file(path)
+            self._rebuild_recent_menu()
 
     def _save_file(self) -> None:
         if self._schematic is None:
@@ -269,6 +289,58 @@ class MainWindow(QMainWindow):
 
     def _set_status(self, msg: str) -> None:
         self._status.showMessage(msg)
+
+    # ------------------------------------------------------------------
+    # Recent files
+    # ------------------------------------------------------------------
+
+    def _rebuild_recent_menu(self) -> None:
+        """Repopulate the Open Recent submenu from settings."""
+        self._recent_menu.clear()
+        recent = _cfg.get_recent_files()
+        if not recent:
+            empty_act = QAction("(no recent files)", self)
+            empty_act.setEnabled(False)
+            self._recent_menu.addAction(empty_act)
+            return
+        for path in recent:
+            name = Path(path).name
+            act = QAction(name, self)
+            act.setToolTip(path)
+            # Capture path for the lambda (avoid late-binding issue)
+            _p = path
+            act.triggered.connect(lambda checked=False, p=_p: self._open_recent(p))
+            self._recent_menu.addAction(act)
+        self._recent_menu.addSeparator()
+        clear_act = QAction("Clear Recent Files", self)
+        clear_act.triggered.connect(self._clear_recent)
+        self._recent_menu.addAction(clear_act)
+
+    def _open_recent(self, path: str) -> None:
+        if not Path(path).exists():
+            QMessageBox.warning(self, "File not found",
+                                f"'{path}' no longer exists.\nIt will be removed from recent files.")
+            _cfg.remove_recent_file(path)
+            self._rebuild_recent_menu()
+            return
+        if self._dirty and not self._confirm_discard():
+            return
+        self._open_file_path(path)
+
+    def _clear_recent(self) -> None:
+        _cfg.set("recent_files", [])
+        self._rebuild_recent_menu()
+
+    # ------------------------------------------------------------------
+    # Settings
+    # ------------------------------------------------------------------
+
+    def _open_settings(self) -> None:
+        from ui.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            # Reload key bindings in the 3D view after settings change
+            self._view3d.reload_settings()
 
     def _confirm_discard(self) -> bool:
         reply = QMessageBox.question(
